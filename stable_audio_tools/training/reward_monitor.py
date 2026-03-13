@@ -30,6 +30,7 @@ class RewardMonitorCallback(pl.Callback):
         null_condition_value=-999.0,
         gen_steps=50,
         cfg_scale=3.5,
+        save_audio=True,
     ):
         super().__init__()
         self.reward_model_path = reward_model_path
@@ -42,6 +43,7 @@ class RewardMonitorCallback(pl.Callback):
         self.null_condition_value = null_condition_value
         self.gen_steps = int(gen_steps)
         self.cfg_scale = float(cfg_scale)
+        self.save_audio = bool(save_audio)
 
         self.reward_model = None
         self.mert_processor = None
@@ -192,12 +194,14 @@ class RewardMonitorCallback(pl.Callback):
                             sample_size=int(model_sr * clean_s),
                         )
 
-                        save_dir = os.path.join(trainer.default_root_dir, "val_samples", f"epoch_{trainer.current_epoch}")
-                        os.makedirs(save_dir, exist_ok=True)
                         audio_to_save = torch.clamp(gen_audio[0].cpu().float(), -1.0, 1.0)
-                        safe_prompt = "".join(x for x in clean_p[:15] if x.isalnum() or x.isspace()).replace(" ", "")
-                        save_path = os.path.join(save_dir, f"sample_{generated_count}_target_{target_val:.2f}_{safe_prompt}.wav")
-                        torchaudio.save(save_path, audio_to_save, model_sr)
+                        save_path = None
+                        if self.save_audio:
+                            save_dir = os.path.join(trainer.default_root_dir, "val_samples", f"epoch_{trainer.current_epoch}")
+                            os.makedirs(save_dir, exist_ok=True)
+                            safe_prompt = "".join(x for x in clean_p[:15] if x.isalnum() or x.isspace()).replace(" ", "")
+                            save_path = os.path.join(save_dir, f"sample_{generated_count}_target_{target_val:.2f}_{safe_prompt}.wav")
+                            torchaudio.save(save_path, audio_to_save, model_sr)
 
                         mert_emb = self.get_mert_embedding(gen_audio, model_sr, device)
                         clap_audio_emb = self.get_clap_audio_embedding(gen_audio, model_sr)
@@ -214,14 +218,12 @@ class RewardMonitorCallback(pl.Callback):
                         if trainer.logger and isinstance(trainer.logger, pl.loggers.WandbLogger):
                             import wandb
 
+                            if save_path and os.path.exists(save_path):
+                                audio_obj = wandb.Audio(save_path, sample_rate=model_sr, caption=f"Prompt: {clean_p} | Target: {target_val:.2f} | Score: {score:.2f}")
+                            else:
+                                audio_obj = wandb.Audio(audio_to_save.numpy().T, sample_rate=model_sr, caption=f"Prompt: {clean_p} | Target: {target_val:.2f} | Score: {score:.2f}")
                             trainer.logger.experiment.log(
-                                {
-                                    f"val_audio/Target_{target_val:.2f}": wandb.Audio(
-                                        save_path,
-                                        sample_rate=model_sr,
-                                        caption=f"Prompt: {clean_p} | Target: {target_val:.2f} | Score: {score:.2f}",
-                                    )
-                                },
+                                {f"val_audio/Target_{target_val:.2f}": audio_obj},
                                 commit=False,
                             )
                             audio_log_count += 1

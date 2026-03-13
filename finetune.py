@@ -20,10 +20,15 @@ DEFAULT_CFG_DROP_RATE = float(os.getenv("SA_CFG_DROP_RATE", "0.15"))
 MUSIC_RANKNET_ROOT = os.getenv("MUSIC_RANKNET_ROOT", "/home/yonghyun/music-ranknet")
 DEFAULT_UNFREEZE_PROFILE = os.getenv("SA_UNFREEZE_PROFILE", "hybrid")
 UNFREEZE_PROFILES = {
-    "hybrid": ["continuous_score", "score_bin", "to_global_embed", "adaLN", "input_add_adapter"],
-    "adaln": ["continuous_score", "score_bin", "adaLN"],
+    # All score-related routes: global_embed projection + adaLN (scale/shift/gate) + input_add adapter
+    "hybrid": ["continuous_score", "score_bin", "to_global_embed", "to_scale_shift_gate", "global_cond_embedder", "input_add_adapter"],
+    # adaLN only: scale/shift/gate per block + shared projection (requires global_cond_type=adaLN in config)
+    "adaln": ["continuous_score", "score_bin", "to_scale_shift_gate", "global_cond_embedder"],
+    # Channel-wise residual adapter only
     "adapter": ["continuous_score", "score_bin", "input_add_adapter"],
+    # Prepend-mode global conditioning projection only
     "global": ["continuous_score", "score_bin", "to_global_embed"],
+    # Only the conditioner heads (no backbone params)
     "minimal": ["continuous_score", "score_bin"],
 }
 
@@ -127,6 +132,22 @@ def resolve_trainable_name_keys():
     return profile, UNFREEZE_PROFILES[profile]
 
 
+def zero_init_new_params(model, pretrained_keys: set):
+    """Zero-initialize parameters that are new (not in pretrained checkpoint).
+
+    Prevents NaN in fp16 when adaLN scale/shift/gate or global_cond_embedder
+    start with large random values.
+    """
+    new_count = 0
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if name not in pretrained_keys:
+                param.zero_()
+                new_count += 1
+                print(f"  [ZERO-INIT] {name} (shape={list(param.shape)})")
+    print(f"[*] Zero-initialized {new_count} new parameters not in pretrained checkpoint.\n")
+
+
 def unfreeze_finetune_params(model):
     profile, trainable_name_keys = resolve_trainable_name_keys()
     print(f"[*] Freezing backbone, unfreezing score-conditioning routes (profile={profile})...")
@@ -205,6 +226,7 @@ def create_reward_callback(val_dl, train_dl, use_score_conditioning):
     val_num_samples = int(os.getenv("SA_VAL_NUM_SAMPLES", "100"))
     val_gen_steps = int(os.getenv("SA_VAL_GEN_STEPS", "50"))
     val_cfg_scale = float(os.getenv("SA_VAL_CFG_SCALE", "3.5"))
+    val_save_audio = os.getenv("SA_VAL_SAVE_AUDIO", "1").strip().lower() in ("1", "true", "yes")
     return RewardMonitorCallback(
         reward_model_path=reward_ckpt_path,
         clap_ckpt_path=clap_ckpt_path,
@@ -216,12 +238,16 @@ def create_reward_callback(val_dl, train_dl, use_score_conditioning):
         null_condition_value=NULL_CONDITION_VALUE,
         gen_steps=val_gen_steps,
         cfg_scale=val_cfg_scale,
+        save_audio=val_save_audio,
     )
 
 
 def create_trainer(args, logger, callbacks):
     strategy = "ddp_find_unused_parameters_true" if torch.cuda.device_count() > 1 else "auto"
     val_args = {"check_val_every_n_epoch": None, "val_check_interval": args.val_every} if args.val_every > 0 else {}
+
+    max_steps = int(os.getenv("SA_TOTAL_STEPS", "-1"))
+    epoch_kwargs = {"max_steps": max_steps} if max_steps > 0 else {"max_epochs": 10000000}
 
     return pl.Trainer(
         devices="auto",
@@ -234,11 +260,11 @@ def create_trainer(args, logger, callbacks):
         callbacks=callbacks,
         logger=logger,
         log_every_n_steps=1,
-        max_epochs=10000000,
         default_root_dir=args.save_dir,
         gradient_clip_val=args.gradient_clip_val,
         reload_dataloaders_every_n_epochs=0,
         num_sanity_val_steps=1,
+        **epoch_kwargs,
         **val_args,
     )
 
@@ -280,18 +306,23 @@ def main():
 
     model = create_model_from_config(model_config)
     if args.pretrained_ckpt_path:
+        pretrained_keys = set(load_ckpt_state_dict(args.pretrained_ckpt_path).keys())
         copy_state_dict(model, load_ckpt_state_dict(args.pretrained_ckpt_path))
+        zero_init_new_params(model, pretrained_keys)
 
     unfreeze_finetune_params(model)
     training_wrapper = create_training_wrapper_from_config(model_config, model)
     attach_custom_optimizer(training_wrapper)
 
+    save_top_k = int(os.getenv("SA_SAVE_TOP_K", "3"))
     logger, checkpoint_dir = create_logger_and_checkpoint_dir(args, training_wrapper)
     callbacks = [
         pl.callbacks.ModelCheckpoint(
             every_n_train_steps=args.checkpoint_every,
             dirpath=checkpoint_dir,
-            save_top_k=-1,
+            save_top_k=save_top_k,
+            monitor="train/loss",
+            mode="min",
         ),
         ExceptionCallback(),
         ModelConfigEmbedderCallback(model_config),

@@ -345,20 +345,7 @@ class DiffusionTransformer(nn.Module):
 
         if global_embed is not None:
             global_embed = global_embed.to(model_dtype)
-            
-            # 차원 충돌 방지 및 점수(Score) 덧셈 결합
-            expected_dim = self.to_global_embed[0].in_features # 768
-            if global_embed.shape[-1] > expected_dim:
-                # 1536차원을 768(seconds_total)과 768(score_bin)로 분리
-                base_cond = global_embed[..., :expected_dim]
-                score_cond = global_embed[..., expected_dim:]
-                
-                # CFG Uncond 패스를 위해 점수(Score)가 빠진 기본 상태를 저장
-                negative_global_embed = base_cond 
-                
-                # 모델에는 덧셈(+)으로 결합하여 768차원을 유지해 전달
-                global_embed = base_cond + score_cond
-                
+
         if negative_global_embed is not None:
             negative_global_embed = negative_global_embed.to(model_dtype)
             

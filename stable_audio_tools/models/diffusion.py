@@ -21,6 +21,7 @@ Key Implementations & Fixes:
 =============================================================================
 """
 
+import os
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -219,22 +220,29 @@ class ConditionedDiffusionModelWrapper(nn.Module):
             cross_attention_masks = torch.cat(cross_attention_masks, dim=1)
 
         if len(self.global_cond_ids) > 0:
-            # Concatenate all global conditioning inputs over the channel dimension
-            # Assumes that the global conditioning inputs are of shape (batch, channels)
+            # Collect global conditioning, normalizing each to (batch, features)
             global_conds = []
             for key in self.global_cond_ids:
                 global_cond_input = conditioning_tensors[key][0]
 
+                # Normalize 3D tensors to 2D (batch, features) for global conditioning
+                if len(global_cond_input.shape) == 3:
+                    if global_cond_input.shape[1] == 1:
+                        global_cond_input = global_cond_input.squeeze(1)  # (B,1,F) -> (B,F)
+                    elif global_cond_input.shape[2] == 1:
+                        global_cond_input = global_cond_input.squeeze(2)  # (B,F,1) -> (B,F)
+                    else:
+                        global_cond_input = global_cond_input.mean(dim=1)
+
                 global_conds.append(global_cond_input)
 
-            # Concatenate over the channel dimension
-            global_cond = torch.cat(global_conds, dim=-1)
-            #====MODIFIED(Yonghyun)===
-            if global_cond.shape[-1] == 1536: # 768 + 768 중복 상황
-                feat1 = global_cond[..., :768]
-                feat2 = global_cond[..., 768:]
-                global_cond = (feat1 + feat2) # 두 정보를 모두 보존하며 768로 압축
-            #==========================
+            # Sum-merge if multiple conditioners share the same feature dim
+            # (e.g. seconds_total=768 + continuous_score=768 -> sum to 768 for adaLN)
+            if len(global_conds) > 1 and all(g.shape[-1] == global_conds[0].shape[-1] for g in global_conds):
+                global_cond = sum(global_conds)
+            else:
+                global_cond = torch.cat(global_conds, dim=-1)
+
             if len(global_cond.shape) == 3:
                 global_cond = global_cond.squeeze(1)
 
@@ -579,6 +587,9 @@ class DiffusionAttnUnet1D(nn.Module):
         return outputs
 
 class DiTWrapper(ConditionedDiffusionModel):
+    # Selective CFG: only apply CFG when sigma >= threshold (LatCHs-inspired)
+    SELECTIVE_CFG_THRESHOLD = float(os.environ.get("SA_SELECTIVE_CFG_THRESHOLD", "0.8"))
+
     def __init__(
         self,
         diffusion_objective: str,
@@ -621,8 +632,8 @@ class DiTWrapper(ConditionedDiffusionModel):
         assert batch_cfg, "batch_cfg must be True for DiTWrapper"
         #assert negative_input_concat_cond is None, "negative_input_concat_cond is not supported for DiTWrapper"
         
-        # 🌟 [LatCHs Insight: Selective CFG] 🌟
-        if t.max().item() < 0.8:
+        # Selective CFG: skip CFG in late denoising steps (LatCHs-inspired)
+        if self.SELECTIVE_CFG_THRESHOLD < 1.0 and t.max().item() < self.SELECTIVE_CFG_THRESHOLD:
             cfg_scale = 1.0
 
         return self.model(

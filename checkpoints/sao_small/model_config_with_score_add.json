@@ -117,7 +117,7 @@
             }
         },
         "demo": {
-            "demo_every": 250,
+            "demo_every": 2500,
             "demo_steps": 8,
             "num_demos": 8,
             "demo_cond": [
