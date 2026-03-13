@@ -163,3 +163,21 @@ cython_debug/
 *.wav
 wandb/*
 *.safetensors
+*.pt
+
+# Training outputs
+logs/
+results/
+nohup.out
+
+# Large data files
+configs/metadata_fma_*.jsonl
+*.tar.gz
+
+# gh CLI (downloaded binary)
+gh_*/
+gh.tar.gz
+
+# IDE
+.vscode/
+.idea/
