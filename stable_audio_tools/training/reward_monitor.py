@@ -81,8 +81,8 @@ class RewardMonitorCallback(pl.Callback):
         with open(self.thresholds_path, "r") as f:
             thresholds_data = json.load(f)
         scores = []
-        for i in range(10, 0, -1):
-            scores.append(float(thresholds_data.get(f"bin_{i}_median", 0.0)))
+        for i in range(10, 110, 10):
+            scores.append(float(thresholds_data.get(f"top_{i}_percent", 0.0)))
         print(f"[*] Successfully loaded 10 Thresholds: {scores}")
         return scores
 
@@ -152,11 +152,13 @@ class RewardMonitorCallback(pl.Callback):
         val_start = time.perf_counter()
 
         target_scores_log, measured_scores_log = [], []
-        bin_scores = {i: [] for i in range(11)}
+        bin_scores = {i: [] for i in range(10)}
         generated_count = 0
         error_count = 0
         audio_log_count = 0
-        model_sr = getattr(pl_module, "sample_rate", 44100)
+        # Get sample_rate from model_config or fallback to model attribute
+        model_config = getattr(pl_module, "model_config", {})
+        model_sr = model_config.get("sample_rate", 44100)
 
         with torch.no_grad():
             for batch in self.val_dl:
@@ -176,10 +178,11 @@ class RewardMonitorCallback(pl.Callback):
                     clean_p = str(p_val)
                     clean_s = 10.0
 
-                    if self.use_score_conditioning and generated_count < 10:
-                        target_val = self.null_condition_value
+                    # Cycle through all target scores (no baseline null samples)
+                    if self.use_score_conditioning:
+                        target_val = float(self.target_score_list[generated_count % 10])
                     else:
-                        target_val = float(self.target_score_list[generated_count % 10]) if self.use_score_conditioning else self.null_condition_value
+                        target_val = self.null_condition_value
 
                     single_cond_input = [{"prompt": clean_p, "seconds_total": clean_s, "continuous_score": target_val}]
                     negative_cond_input = [{"prompt": "", "seconds_total": clean_s, "continuous_score": self.null_condition_value}]
@@ -218,12 +221,17 @@ class RewardMonitorCallback(pl.Callback):
                         if trainer.logger and isinstance(trainer.logger, pl.loggers.WandbLogger):
                             import wandb
 
+                            caption = f"Prompt: {clean_p} | Target: {target_val:.2f} | Score: {score:.2f}"
                             if save_path and os.path.exists(save_path):
-                                audio_obj = wandb.Audio(save_path, sample_rate=model_sr, caption=f"Prompt: {clean_p} | Target: {target_val:.2f} | Score: {score:.2f}")
+                                audio_obj = wandb.Audio(save_path, sample_rate=model_sr, caption=caption)
                             else:
-                                audio_obj = wandb.Audio(audio_to_save.numpy().T, sample_rate=model_sr, caption=f"Prompt: {clean_p} | Target: {target_val:.2f} | Score: {score:.2f}")
+                                audio_obj = wandb.Audio(audio_to_save.numpy().T, sample_rate=model_sr, caption=caption)
+
+                            bin_idx = generated_count % 10
+                            pct = (bin_idx + 1) * 10
+                            key = f"val_audio/top{pct}pct_{target_val:.2f}"
                             trainer.logger.experiment.log(
-                                {f"val_audio/Target_{target_val:.2f}": audio_obj},
+                                {key: audio_obj},
                                 commit=False,
                             )
                             audio_log_count += 1
