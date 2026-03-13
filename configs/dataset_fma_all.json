@@ -4,11 +4,7 @@
         {
             "id": "fma_all",
             "path": "/home/yonghyun/fma/data/fma_large",
-            "custom_metadata_path": "/home/yonghyun/stable-audio-tools/configs/metadata_fma_all.csv",
-            "custom_metadata_type": "csv",
-            "custom_metadata_keys": [
-                "prompt"
-            ]
+            "custom_metadata_path": "/home/yonghyun/stable-audio-tools/configs/metadata_fma_all.jsonl"
         }
     ]
 }

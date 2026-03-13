@@ -4,7 +4,7 @@
         {
             "id": "fma_scored",
             "path": "/home/yonghyun/fma/data/fma_large",
-            "custom_metadata_module": "fma_metadata"
+            "custom_metadata_path": "/home/yonghyun/stable-audio-tools/configs/metadata_fma_scored.jsonl"
         }
     ]
 }
