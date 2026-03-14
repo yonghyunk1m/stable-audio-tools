@@ -1,6 +1,5 @@
 # Score-Conditioned Audio Generation with SAO-Small: A Complete Tutorial
 
-**Target audience**: CS undergraduates with basic knowledge of deep learning.
 **Last updated**: 2026-03-14
 
 ---
