@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from itertools import combinations
 
 import laion_clap
@@ -87,8 +88,10 @@ class RewardMonitorCallback(pl.Callback):
         return scores
 
     def _load_clap_checkpoint(self, device):
-        # Use load_ckpt() — same as 04_extract_fma_features.py
-        # This initializes CLAP's internal preprocessing pipeline correctly.
+        # Manual load to handle laion_clap<1.1.7 missing position_ids compat fix.
+        # Replicates load_ckpt() logic but removes the unexpected key before strict load.
+        from laion_clap.clap_module.factory import load_state_dict as clap_load_state_dict
+
         original_torch_load = torch.load
 
         def safe_load_wrapper(*args, **kwargs):
@@ -98,7 +101,10 @@ class RewardMonitorCallback(pl.Callback):
 
         try:
             torch.load = safe_load_wrapper
-            self.clap_model.load_ckpt(ckpt=self.clap_ckpt_path)
+            state_dict = clap_load_state_dict(self.clap_ckpt_path, skip_params=True)
+            # Compat fix from laion_clap>=1.1.7: remove position_ids
+            state_dict.pop("text_branch.embeddings.position_ids", None)
+            self.clap_model.model.load_state_dict(state_dict)
         finally:
             torch.load = original_torch_load
 
@@ -136,11 +142,17 @@ class RewardMonitorCallback(pl.Callback):
         return torch.from_numpy(embedding).float().to(waveform.device if waveform.is_cuda else "cpu")
 
     def get_clap_text_embedding(self, texts, device):
-        """Extract CLAP text embedding — matches 04_extract pipeline."""
+        """Extract CLAP text embedding — works around laion_clap<1.1.7 tokenizer squeeze bug."""
         if isinstance(texts, str):
             texts = [texts]
+
+        def _tokenizer_no_squeeze(text):
+            return self.clap_model.tokenize(
+                text, padding="max_length", truncation=True, max_length=77, return_tensors="pt"
+            )
+
         with torch.no_grad():
-            embedding = self.clap_model.get_text_embedding(texts)
+            embedding = self.clap_model.get_text_embedding(texts, tokenizer=_tokenizer_no_squeeze)
         return torch.from_numpy(embedding).float().to(device)
 
     def on_validation_epoch_end(self, trainer, pl_module):
@@ -246,6 +258,7 @@ class RewardMonitorCallback(pl.Callback):
                         generated_count += 1
                     except Exception as e:
                         print(f"!!! Error at sample {generated_count}: {e}")
+                        traceback.print_exc()
                         error_count += 1
                         generated_count += 1
 
