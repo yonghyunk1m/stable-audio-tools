@@ -279,21 +279,33 @@ Metric 계산 & wandb 로깅:
 | case3b_adaln_v3 | 03-14 00:11 | crashed | Fix 1–5 | laion_clap 1.1.4 `position_ids` 에러 |
 | case3b_adaln_v4 | 03-14 01:01 | killed | Fix 1–6a | `tuple index out of range` (tokenizer) |
 | case3b_adaln_v4b | 03-14 01:05 | killed | Fix 1–6a + traceback | 에러 위치 확인 (RobertaModel.forward) |
-| **case3b_adaln_v4c** | **03-14 01:08** | **running** | **Fix 1–7 (all)** | **100 samples, 0 errors, corr=0.03** |
+| **case3b_adaln_v4c** | **03-14 01:08** | **killed** | **Fix 1–7 (all)** | **corr/mono 변화 없음 (adaln no-op)** |
+| **case3b_adaln_v5** | **03-14 01:50** | **running** | **Fix 1–7 + adaln config** | **model_config_with_score_adaln.json 사용** |
 
-### 현재 학습 상태 (v4c)
-- **wandb**: `case3b_adaln_v4c` ([link](https://wandb.ai/yonghyunk1m/music-steerability-study))
+### Fix 8: adaln Profile이 No-op였던 문제
+
+**증상**: v4c에서 step 0과 step 5000의 validation 결과가 **완전히 동일** (corr=0.028, mono=0.493).
+
+**원인**: `model_config_with_score.json`은 `global_cond_type: "prepend"` (기본값)이므로 모델에 `to_scale_shift_gate`, `global_cond_embedder` 파라미터가 존재하지 않음. adaln profile로 unfreeze해도 매칭되는 파라미터가 없어 실질적으로 `minimal` profile과 동일 (Linear(1,768) = 1.5K params만 학습).
+
+**수정**: `MODEL_CONFIG=model_config_with_score_adaln.json` 사용. 이 config는:
+- `global_cond_type: "adaLN"` 설정
+- DiT 16블록에 `to_scale_shift_gate` + `global_cond_embedder` 파라미터 추가 (7.4M params)
+- 총 504.7M params (ISMIR 대상이므로 500M 제한 무관)
+
+### 현재 학습 상태 (v5)
+- **wandb**: `case3b_adaln_v5` ([link](https://wandb.ai/yonghyunk1m/music-steerability-study))
 - **GPU**: CUDA 8,9 (NVIDIA RTX A5000)
-- **Profile**: adaln (7.4M trainable / 497M total)
-- **Initial validation** (step 0): correlation=0.03, monotonicity=0.49
-- **Train loss**: 1.3–2.1 범위 (정상)
-- **다음 validation**: step 5000 (~30분 간격)
+- **Model config**: `model_config_with_score_adaln.json` (adaLN 활성화, 504.7M)
+- **Profile**: adaln (7.4M trainable)
+- **Target**: ISMIR Track (FMA-Large)
 
 ---
 
 ## 6. Git Commit History
 
 ```
+7afaeef  docs: add debugging log for 2026-03-14 reward monitor pipeline fixes
 2be308a  fix: resolve laion_clap 1.1.4 compat issues (position_ids + tokenizer squeeze)
 f843a3f  fix: align CLAP/text extraction with pre-scoring pipeline
 1fb5dd7  fix: correct reward thresholds, remove baseline null samples, stabilize sample_rate access
@@ -303,8 +315,9 @@ f843a3f  fix: align CLAP/text extraction with pre-scoring pipeline
 
 ## 7. 남은 과제 (Next Steps)
 
-- [ ] Step 5000 validation에서 correlation/monotonicity 개선 확인
+- [ ] v5 step 5000 validation에서 correlation/monotonicity 개선 확인
 - [ ] Case 2 (SFT baseline), Case 3a (adapter), Case 3c (hybrid) 실행
 - [ ] ICME Track: 500M 파라미터 제한 → adapter(497.2M) 또는 global(499.0M) profile만 사용 가능
 - [ ] Score normalization 전략 검토 (현재 raw score, 범위 ~[-5.8, +1.5])
+- [ ] MTG-Jamendo feature 추출 진행 중 (GPU 0,1 / ~27시간 예상)
 - [ ] MTG-Jamendo 데이터셋 준비 (ICME Grand Challenge)
