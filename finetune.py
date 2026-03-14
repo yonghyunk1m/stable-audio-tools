@@ -30,6 +30,8 @@ UNFREEZE_PROFILES = {
     "global": ["continuous_score", "score_bin", "to_global_embed"],
     # Only the conditioner heads (no backbone params)
     "minimal": ["continuous_score", "score_bin"],
+    # Cross-attention: score as cross-attn token, unfreeze conditioner + cross-attn projection
+    "xattn": ["continuous_score", "score_bin", "to_cond_embed"],
 }
 
 

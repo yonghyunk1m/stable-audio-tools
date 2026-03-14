@@ -914,19 +914,20 @@ class ContinuousScoreConditioner(nn.Module):
             x = torch.cat([torch.as_tensor(item, dtype=torch.float32, device=device).view(-1) for item in x])
         else:
             x = torch.as_tensor(x, dtype=torch.float32, device=device).view(-1)
-            
-        # 2. 모델이 요구하는 완벽한 (Batch, 1) 세로 형태로 강제 정렬합니다.
+
+        # Shape: (Batch, 1) for linear input
         x = x.view(-1, 1)
-        
-        # 3. Linear 계층을 통과시킵니다.
+
+        # Linear projection: (B, 1) -> (B, output_dim)
         embeds = self.mapper(x)
-        embeds = embeds.unsqueeze(-1)
-        
-        # 4. CFG Null condition handling (-999.0)
+
+        # CFG Null condition handling (-999.0)
         null_idx = (x.squeeze(-1) == -999.0)
         if null_idx.any():
             embeds[null_idx] = 0.0
 
-        # Return embeddings and a fully active mask on the correct device
+        # Return 2D (B, output_dim) — get_conditioning_inputs will unsqueeze
+        # for cross-attention: (B, output_dim) -> unsqueeze(1) -> (B, 1, output_dim)
+        # for global_cond: (B, output_dim) -> squeeze handled in get_conditioning_inputs
         mask = torch.ones(embeds.shape[0], 1, device=device)
         return embeds, mask

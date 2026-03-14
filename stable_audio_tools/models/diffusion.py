@@ -210,8 +210,10 @@ class ConditionedDiffusionModelWrapper(nn.Module):
 
                 # Add sequence dimension if it's not there
                 if len(cross_attn_in.shape) == 2:
-                    cross_attn_in = cross_attn_in.unsqueeze(1)
-                    cross_attn_mask = cross_attn_mask.unsqueeze(1)
+                    cross_attn_in = cross_attn_in.unsqueeze(1)  # (B, feat) -> (B, 1, feat)
+                # Ensure mask is always 2D (B, seq) for proper concatenation
+                if len(cross_attn_mask.shape) == 1:
+                    cross_attn_mask = cross_attn_mask.unsqueeze(0)  # (seq,) -> (1, seq)
 
                 cross_attention_input.append(cross_attn_in)
                 cross_attention_masks.append(cross_attn_mask)
