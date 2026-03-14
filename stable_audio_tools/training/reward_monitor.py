@@ -10,7 +10,7 @@ import torch
 import torchaudio
 import transformers.modeling_utils
 import transformers.utils.import_utils
-from transformers import AutoModel, RobertaTokenizer, Wav2Vec2FeatureExtractor
+from transformers import AutoModel, Wav2Vec2FeatureExtractor
 
 transformers.utils.import_utils.check_torch_load_is_safe = lambda: None
 if hasattr(transformers.modeling_utils, "check_torch_load_is_safe"):
@@ -71,9 +71,9 @@ class RewardMonitorCallback(pl.Callback):
         self.mert_processor = Wav2Vec2FeatureExtractor.from_pretrained("m-a-p/MERT-v1-330M", trust_remote_code=True)
         self.mert_model = AutoModel.from_pretrained("m-a-p/MERT-v1-330M", trust_remote_code=True).eval().to(device).requires_grad_(False)
 
-        self.clap_model = laion_clap.CLAP_Module(enable_fusion=False, amodel="HTSAT-base").eval().to(device)
+        self.clap_model = laion_clap.CLAP_Module(enable_fusion=False, amodel="HTSAT-base")
         self._load_clap_checkpoint(device)
-        self.clap_model.requires_grad_(False)
+        self.clap_model.to(device).eval().requires_grad_(False)
 
     def _load_threshold_targets(self):
         if not os.path.exists(self.thresholds_path):
@@ -87,6 +87,8 @@ class RewardMonitorCallback(pl.Callback):
         return scores
 
     def _load_clap_checkpoint(self, device):
+        # Use load_ckpt() — same as 04_extract_fma_features.py
+        # This initializes CLAP's internal preprocessing pipeline correctly.
         original_torch_load = torch.load
 
         def safe_load_wrapper(*args, **kwargs):
@@ -96,13 +98,7 @@ class RewardMonitorCallback(pl.Callback):
 
         try:
             torch.load = safe_load_wrapper
-            ckpt = torch.load(self.clap_ckpt_path, map_location=device)
-            if "model" in ckpt:
-                ckpt = ckpt["model"]
-            if "text_branch.embeddings.position_ids" in ckpt:
-                del ckpt["text_branch.embeddings.position_ids"]
-            self.clap_model.model.load_state_dict(ckpt, strict=False)
-            self.tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
+            self.clap_model.load_ckpt(ckpt=self.clap_ckpt_path)
         finally:
             torch.load = original_torch_load
 
@@ -120,26 +116,32 @@ class RewardMonitorCallback(pl.Callback):
             outputs = self.mert_model(**inputs, output_hidden_states=True)
         return outputs.last_hidden_state.mean(dim=1)
 
-    def get_clap_audio_embedding(self, waveform, sr):
+    def get_clap_audio_embedding(self, waveform, sr, save_dir=None, sample_idx=0):
+        """Extract CLAP audio embedding via temp file — matches 04_extract pipeline."""
         target_sr = 48000
         if sr != target_sr:
             waveform = torchaudio.functional.resample(waveform, sr, target_sr)
-        if waveform.dim() == 3 and waveform.size(1) > 1:
-            waveform = torch.mean(waveform, dim=1)
-        elif waveform.dim() == 3:
-            waveform = waveform.squeeze(1)
+        if waveform.dim() == 3:
+            waveform = waveform.squeeze(0)  # (B,C,T) → (C,T)
+        if waveform.dim() == 2 and waveform.size(0) > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
 
+        # Save to temp file and use get_audio_embedding_from_filelist (same as 04_extract)
+        tmp_dir = save_dir or "/tmp"
+        tmp_path = os.path.join(tmp_dir, f"_clap_tmp_{sample_idx}.wav")
+        torchaudio.save(tmp_path, waveform.cpu(), target_sr)
         with torch.no_grad():
-            return self.clap_model.get_audio_embedding_from_data(x=waveform, use_tensor=True)
+            embedding = self.clap_model.get_audio_embedding_from_filelist(x=[tmp_path])
+        os.remove(tmp_path)
+        return torch.from_numpy(embedding).float().to(waveform.device if waveform.is_cuda else "cpu")
 
     def get_clap_text_embedding(self, texts, device):
-        text_data = self.tokenizer(texts, padding="max_length", truncation=True, max_length=77, return_tensors="pt")
-        for k in text_data:
-            if text_data[k].dim() == 1:
-                text_data[k] = text_data[k].unsqueeze(0)
-        text_data = {k: v.to(device) for k, v in text_data.items()}
+        """Extract CLAP text embedding — matches 04_extract pipeline."""
+        if isinstance(texts, str):
+            texts = [texts]
         with torch.no_grad():
-            return self.clap_model.model.get_text_embedding(text_data)
+            embedding = self.clap_model.get_text_embedding(texts)
+        return torch.from_numpy(embedding).float().to(device)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if self.reward_model is None or self.val_dl is None:
@@ -207,8 +209,12 @@ class RewardMonitorCallback(pl.Callback):
                             torchaudio.save(save_path, audio_to_save, model_sr)
 
                         mert_emb = self.get_mert_embedding(gen_audio, model_sr, device)
-                        clap_audio_emb = self.get_clap_audio_embedding(gen_audio, model_sr)
-                        clap_text_emb = self.get_clap_text_embedding([clean_p], device)
+                        clap_audio_emb = self.get_clap_audio_embedding(
+                            gen_audio, model_sr,
+                            save_dir=os.path.join(trainer.default_root_dir, "val_samples"),
+                            sample_idx=generated_count,
+                        )
+                        clap_text_emb = self.get_clap_text_embedding(clean_p, device)
                         flag_tensor = torch.ones((1, 1), dtype=torch.float32, device=device)
                         concat_feat = torch.cat([flag_tensor, clap_audio_emb, mert_emb, clap_text_emb], dim=-1)
                         score = self.reward_model(concat_feat).item()
