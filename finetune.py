@@ -133,19 +133,43 @@ def resolve_trainable_name_keys():
 
 
 def zero_init_new_params(model, pretrained_keys: set):
-    """Zero-initialize parameters that are new (not in pretrained checkpoint).
+    """Zero-initialize NEW parameters following ControlNet zero-conv principle.
 
-    Prevents NaN in fp16 when adaLN scale/shift/gate or global_cond_embedder
-    start with large random values.
+    Output layers are zero-init'd so new conditioning paths start with zero
+    effect (preserving pretrained behavior).  Intermediate layers keep their
+    random init so that gradients can flow through the chain.
+
+    Without this distinction, consecutive zero-init'd layers create a dead
+    gradient: dL/dW = dL/d(out) * input = nonzero * 0 = 0, and
+    dL/d(input) = W^T * dL/d(out) = 0 * nonzero = 0.
     """
-    new_count = 0
+    # Intermediate layers: keep random init for gradient flow.
+    # These feed INTO zero-init'd output layers, so their non-zero activations
+    # let the output layer's weight gradient be non-zero.
+    KEEP_RANDOM_PATTERNS = [
+        "continuous_score",        # ContinuousScoreConditioner mapper (Linear 1->768)
+        "global_cond_embedder.0",  # First linear of embedder (768->1024), intermediate
+    ]
+
+    zero_count = 0
+    keep_count = 0
     with torch.no_grad():
         for name, param in model.named_parameters():
             if name not in pretrained_keys:
-                param.zero_()
-                new_count += 1
-                print(f"  [ZERO-INIT] {name} (shape={list(param.shape)})")
-    print(f"[*] Zero-initialized {new_count} new parameters not in pretrained checkpoint.\n")
+                if any(pat in name for pat in KEEP_RANDOM_PATTERNS):
+                    # Scale down random init to avoid fp16 overflow while
+                    # keeping non-zero values for gradient flow.
+                    param.data.normal_(0, 0.02)
+                    keep_count += 1
+                    print(f"  [SMALL-INIT] {name} (shape={list(param.shape)})")
+                else:
+                    param.zero_()
+                    zero_count += 1
+                    print(f"  [ZERO-INIT] {name} (shape={list(param.shape)})")
+    print(
+        f"[*] Initialized {zero_count + keep_count} new parameters: "
+        f"{zero_count} zero-init, {keep_count} small-random-init.\n"
+    )
 
 
 def unfreeze_finetune_params(model):
