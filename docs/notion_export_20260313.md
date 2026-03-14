@@ -1,6 +1,6 @@
 # SAO-Small Score Conditioning Fine-tuning
 
-> 작성일: 2026-03-13
+> 작성일: 2026-03-13 (최종 업데이트: 2026-03-14)
 > 프로젝트: Stable Audio Open Small + Music-RankNet Score Conditioning
 > 목적: 리워드 모델 점수를 조건으로 사용하여 음악 생성 품질을 제어하는 파인튜닝 실험
 
@@ -30,16 +30,27 @@ Stable Audio Open Small (SAO-Small, 497M params) 모델에 Music-RankNet 리워�
 
 ### 실행 명령어
 ```bash
-# 개별 케이스 실행
-./scripts/run_experiments.sh case3b
+# Case 3b (adaln) — ★ MODEL_CONFIG 반드시 지정 필요
+CUDA_VISIBLE_DEVICES=8,9 SA_UNFREEZE_PROFILE=adaln \
+  MODEL_CONFIG=./checkpoints/sao_small/model_config_with_score_adaln.json \
+  RUN_NAME=case3b_adaln VAL_EVERY=5000 \
+  ./scripts/run_finetune_case3.sh
+
+# Case 3a (adapter) — prepend config 사용 가능
+SA_UNFREEZE_PROFILE=adapter RUN_NAME=case3a_adapter ./scripts/run_finetune_case3.sh
 
 # 사용 가능: case2, case3a, case3b, case3c, case4
-# GPU 변경: CUDA_VISIBLE_DEVICES=0,1 ./scripts/run_experiments.sh case3b
 ```
 
-### ICME Challenge Track (MTG-Jamendo) — 추후 진행
-- SAO-Small을 MTG-Jamendo로 처음부터 학습
+> **주의**: adaln/hybrid profile은 반드시 `model_config_with_score_adaln.json`을 사용해야 함.
+> 기본 config(`model_config_with_score.json`)는 `global_cond_type: "prepend"`이므로 adaLN 파라미터가 모델에 존재하지 않아 adaln profile이 no-op이 됨 (03-14 발견).
+
+### ICME Challenge Track (MTG-Jamendo)
+- SAO-Small을 MTG-Jamendo로 학습
+- **500M 파라미터 제한** → adapter(497.2M) 또는 global(499.0M) profile만 사용 가능
 - 전체 데이터 vs 리워드 필터링 vs 점수 조건부 비교
+- MTG-Jamendo 오디오 다운로드 완료 (55,701 tracks, 508GB)
+- Feature 추출 진행 중 (2026-03-14)
 
 ---
 
@@ -107,13 +118,15 @@ adaLN 설정에서 `continuous_score`는 **두 경로**로 동시에 들어감:
 
 ## 4. Unfreeze Profile별 학습 파라미터
 
-| Profile | 텐서 수 | 파라미터 수 | 비율 | 학습 대상 |
-|---------|---------|-----------|------|----------|
-| **hybrid** | 25 | 9.3M | 1.85% | adaLN 전체 + adapter + global_embed + conditioner |
-| **adaln** | 22 | 7.4M | 1.48% | to_scale_shift_gate (16블록) + global_cond_embedder + conditioner |
-| **adapter** | 3 | 50K | 0.01% | input_add_adapter (Conv1d 768→64) + conditioner |
-| **global** | 4 | 1.8M | 0.36% | to_global_embed (2 linear layers) + conditioner |
-| **minimal** | 2 | 1.5K | ~0% | continuous_score.mapper (Linear 1→768) only |
+| Profile | 텐서 수 | 파라미터 수 | 총 모델 | 학습 대상 | 필요 config |
+|---------|---------|-----------|--------|----------|------------|
+| **hybrid** | 25 | 9.3M | 504.7M | adaLN 전체 + adapter + global_embed + conditioner | `adaln` config 필수 |
+| **adaln** | 22 | 7.4M | 504.7M | to_scale_shift_gate (16블록) + global_cond_embedder + conditioner | `adaln` config 필수 |
+| **adapter** | 3 | 50K | 497.2M | input_add_adapter (Conv1d 768→64) + conditioner | prepend OK |
+| **global** | 4 | 1.8M | 499.0M | to_global_embed (2 linear layers) + conditioner | prepend OK |
+| **minimal** | 2 | 1.5K | 497M | continuous_score.mapper (Linear 1→768) only | prepend OK |
+
+> **ICME 500M 제한**: adapter(497.2M), global(499.0M)만 적합. adaln/hybrid는 504.7M으로 초과.
 
 ---
 
@@ -137,10 +150,12 @@ adaLN 설정에서 `continuous_score`는 **두 경로**로 동시에 들어감:
 - 1.0으로 설정하면 항상 CFG 적용
 
 ### Validation (RewardMonitorCallback)
-- 생성 샘플 수: 100 (`SA_VAL_NUM_SAMPLES`)
+- 생성 샘플 수: 100 (`SA_VAL_NUM_SAMPLES`) — 10 bins × 10 repeats
 - 생성 스텝: 50 (`SA_VAL_GEN_STEPS`)
 - CFG Scale: 3.5 (`SA_VAL_CFG_SCALE`)
 - 리워드 모델로 점수 매기고, correlation/monotonicity 측정
+- Target score: 10-bin 중앙값 사용 (경계값 아님, 03-14 수정)
+- Feature 추출: scoring pipeline(04_extract)과 동일한 방식으로 정합 (03-14 수정)
 
 ---
 
@@ -166,9 +181,9 @@ adaLN 설정에서 `continuous_score`는 **두 경로**로 동시에 들어감:
 
 ---
 
-## 7. 코드 수정 이력 (2026-03-13)
+## 7. 코드 수정 이력
 
-### 7.1 버그 수정
+### 7.1 버그 수정 (2026-03-13)
 
 | # | 파일 | 수정 내용 | 이유 |
 |---|------|----------|------|
@@ -177,16 +192,30 @@ adaLN 설정에서 `continuous_score`는 **두 경로**로 동시에 들어감:
 | 3 | `diffusion.py` get_conditioning_inputs() | 3D→2D shape 정규화 + 같은 dim이면 sum-merge | seconds_total (B,1,768)과 score (B,768,1) concat 시 shape 에러 |
 | 4 | `dit.py` forward() | 1536→768 하드코딩 분리 로직 삭제 | 상위에서 이미 처리하므로 dead code |
 
-### 7.2 기능 추가
+### 7.2 버그 수정 (2026-03-14) — RewardMonitorCallback
+
+| # | 파일 | 수정 내용 | 이유 |
+|---|------|----------|------|
+| 5 | `reward_monitor.py` | threshold 키 `bin_{i}_median` → `top_{i}_percent` | 잘못된 키로 모든 target=0.0 → corr/mono 항상 0 |
+| 6 | `reward_monitor.py` | 첫 10개 null sample 제거 | 100개 중 10개 낭비 + top_100% bin 미측정 |
+| 7 | `reward_monitor.py` | wandb audio key에 bin index 추가 | 동일 키 덮어쓰기로 2개만 표시됨 |
+| 8 | `reward_monitor.py` | `sample_rate` → `model_config.get()` | pl_module에 sample_rate 속성 없음 |
+| 9 | `reward_monitor.py` | CLAP 로딩: `load_ckpt()` → 수동 `load_state_dict` | laion_clap 1.1.4 `position_ids` 키 호환성 |
+| 10 | `reward_monitor.py` | CLAP audio: `get_audio_embedding_from_filelist()` via temp file | `get_audio_embedding_from_data()`와 전처리 차이로 cos sim ~0.05 |
+| 11 | `reward_monitor.py` | CLAP text: `get_text_embedding()` + custom tokenizer | 수동 RobertaTokenizer 결과 불일치 + 1.1.4 squeeze 버그 |
+| 12 | `reward_thresholds.json` | 경계값(boundary) → 중앙값(median) | 경계값은 bin 대표값으로 부적합 (특히 Top 100%: -5.80 → -1.52) |
+| 13 | 실행 시 | `MODEL_CONFIG=model_config_with_score_adaln.json` 필수 | 기본 config(prepend)에는 adaLN 파라미터 미존재 → adaln profile이 no-op |
+
+### 7.3 기능 추가 (2026-03-13)
 
 | # | 파일 | 내용 |
 |---|------|------|
-| 5 | `model_config_with_score_adaln.json` | adaLN 활성화 config 생성 (`global_cond_type: "adaLN"`, dual-path) |
-| 6 | `diffusion.py` DiTWrapper | Selective CFG threshold 환경변수화 (`SA_SELECTIVE_CFG_THRESHOLD`) |
-| 7 | `scripts/run_experiments.sh` | 전체 실험 케이스 마스터 런처 생성 |
-| 8 | `scripts/run_finetune_case3.sh` | Python 경로, 새 환경변수, help 텍스트 업데이트 |
+| 14 | `model_config_with_score_adaln.json` | adaLN 활성화 config 생성 (`global_cond_type: "adaLN"`, dual-path) |
+| 15 | `diffusion.py` DiTWrapper | Selective CFG threshold 환경변수화 (`SA_SELECTIVE_CFG_THRESHOLD`) |
+| 16 | `scripts/run_experiments.sh` | 전체 실험 케이스 마스터 런처 생성 |
+| 17 | `scripts/run_finetune_case3.sh` | Python 경로, 새 환경변수, help 텍스트 업데이트 |
 
-### 7.3 Pretrained Weight 호환성
+### 7.4 Pretrained Weight 호환성
 - `copy_state_dict()`가 `strict=False`로 동작하여 매칭되는 키만 로드
 - adaLN config 사용 시 23개 새 파라미터는 랜덤 초기화 상태로 학습 시작
 - `input_add_adapter`는 zero-init (Conv1d weight=0)이므로 초기에 pretrained 동작 보존
@@ -233,10 +262,15 @@ music-ranknet/
 
 ---
 
-## 9. 다음 단계 (TODO)
+## 9. 현재 진행 상태 & 다음 단계
 
-- [ ] Case 3b (adaLN) 실험 먼저 실행하여 학습 안정성 확인
-- [ ] Case 2 (SFT baseline) 동시 실행하여 비교군 확보
-- [ ] 학습 곡선 및 리워드 correlation 추이 확인 후 나머지 케이스 진행
-- [ ] ICME Track: MTG-Jamendo 데이터셋 준비 및 설정
-- [ ] Score normalization 전략 검토 (현재 raw score 사용 중)
+### 진행 중 (2026-03-14)
+- [x] Case 3b v5 (adaln, `model_config_with_score_adaln.json`, 7.4M trainable) 학습 중 — GPU 8,9
+- [x] MTG-Jamendo feature 추출 중 — GPU 0,1 (54,753 tracks, ~27시간 예상)
+
+### TODO
+- [ ] v5 step 5000 validation에서 correlation/monotonicity 개선 확인
+- [ ] Case 2 (SFT baseline) 실행하여 비교군 확보
+- [ ] Case 3a (adapter), Case 3c (hybrid) 실행
+- [ ] ICME Track: Jamendo scoring → threshold 계산 → 학습 파이프라인 구축
+- [ ] Score normalization 전략 검토 (현재 raw score, 범위 ~[-5.8, +1.5])
