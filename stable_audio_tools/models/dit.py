@@ -409,11 +409,13 @@ class DiffusionTransformer(nn.Module):
             # else:
             #     batch_global_cond = None
             if global_embed is not None:
-                # Null 임베딩(negative)이 존재하면 Uncond 패스에 넣기
+                # Uncond pass should use null (zero) global_embed so CFG can
+                # amplify the score signal.  During training, score=-999 produces
+                # a zero embedding, so zeros here match the learned null state.
                 if negative_global_embed is not None:
                     batch_global_cond = torch.cat([global_embed, negative_global_embed], dim=0)
                 else:
-                    batch_global_cond = torch.cat([global_embed, global_embed], dim=0)
+                    batch_global_cond = torch.cat([global_embed, torch.zeros_like(global_embed)], dim=0)
             else:
                 batch_global_cond = None
 

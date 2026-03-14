@@ -23,7 +23,7 @@ UNFREEZE_PROFILES = {
     # All score-related routes: global_embed projection + adaLN (scale/shift/gate) + input_add adapter
     "hybrid": ["continuous_score", "score_bin", "to_global_embed", "to_scale_shift_gate", "global_cond_embedder", "input_add_adapter"],
     # adaLN only: scale/shift/gate per block + shared projection (requires global_cond_type=adaLN in config)
-    "adaln": ["continuous_score", "score_bin", "to_scale_shift_gate", "global_cond_embedder"],
+    "adaln": ["continuous_score", "score_bin", "to_global_embed", "to_scale_shift_gate", "global_cond_embedder"],
     # Channel-wise residual adapter only
     "adapter": ["continuous_score", "score_bin", "input_add_adapter"],
     # Prepend-mode global conditioning projection only
@@ -146,9 +146,14 @@ def zero_init_new_params(model, pretrained_keys: set):
     # Intermediate layers: keep random init for gradient flow.
     # These feed INTO zero-init'd output layers, so their non-zero activations
     # let the output layer's weight gradient be non-zero.
+    # Intermediate layers: small random init for gradient flow.
+    # Output layers: zero-init so new paths start with zero effect.
+    # This is the ControlNet zero-conv principle:
+    #   intermediate (non-zero) → output (zero) → zero effect, but gradients flow.
     KEEP_RANDOM_PATTERNS = [
         "continuous_score",        # ContinuousScoreConditioner mapper (Linear 1->768)
-        "global_cond_embedder.0",  # First linear of embedder (768->1024), intermediate
+        "global_cond_embedder.0",  # FIRST linear of embedder (1024->1024), intermediate
+        # global_cond_embedder.2 (1024->6144) is OUTPUT → zero-init'd (not listed here)
     ]
 
     zero_count = 0
