@@ -118,20 +118,37 @@ adaLN 설정에서 `continuous_score`는 **두 경로**로 동시에 들어감:
 
 ## 4. Unfreeze Profile별 학습 파라미터
 
-| Profile | 텐서 수 | 파라미터 수 | 총 모델 | 학습 대상 | 필요 config |
-|---------|---------|-----------|--------|----------|------------|
-| **hybrid** | 25 | 9.3M | 504.7M | adaLN 전체 + adapter + global_embed + conditioner | `adaln` config 필수 |
-| **adaln** | 22 | 7.4M | 504.7M | to_scale_shift_gate (16블록) + global_cond_embedder + conditioner | `adaln` config 필수 |
-| **adapter** | 3 | 50K | 497.2M | input_add_adapter (Conv1d 768→64) + conditioner | prepend OK |
-| **global** | 4 | 1.8M | 499.0M | to_global_embed (2 linear layers) + conditioner | prepend OK |
-| **minimal** | 2 | 1.5K | 497M | continuous_score.mapper (Linear 1→768) only | prepend OK |
-| **xattn** | ~12 | 1.8M | 497M | continuous_score (Fourier+MLP) + to_cond_embed | prepend OK |
-| **xattn_concat** | ~18 | 2.6M | 497M | continuous_score + score_concat + to_cond_embed + preprocess_conv | `xattn_concat` config 필수 |
+### 4.1 모델 구성 요소별 파라미터
 
-> **ICME 500M 제한 (core generative model only)**: VAE encoder/decoder, T5 text encoder는 auxiliary로 제외.
-> Core = DiT(339M) + conditioners(~1M) = **~340M** → 500M 대비 **160M 여유**.
-> 모든 profile이 500M 이내. adaln/hybrid도 504.7M이지만 이는 total이며, core는 ~347M.
-> **ISMIR**: 총 파라미터 제한 없음. xattn/xattn_concat 권장 (실험적으로 검증됨).
+| 구성 요소 | 파라미터 수 | ICME 분류 |
+|-----------|-----------|----------|
+| VAE Encoder (Oobleck) | 78.0M | Auxiliary (500M 계산 제외) |
+| VAE Decoder (Oobleck) | 78.1M | Auxiliary (500M 계산 제외) |
+| T5-base Text Encoder | ~109M | Auxiliary (500M 계산 제외) |
+| **DiT (Diffusion Transformer)** | **339.1M** | **Core** |
+| NumberConditioner (seconds_total) | 0.2M | Core |
+| FourierScoreConditioner (cross-attn) | 0.8M | Core |
+| ScoreInputConcatConditioner (input-concat) | 0.01M | Core |
+| ScoreBinConditioner | — | Core |
+| **Core 합계 (ICME 기준)** | **~340M** | **500M 대비 68%** |
+| **Auxiliary 합계** | **~265M** | 제외 |
+| **Total** | **~496M** | — |
+
+### 4.2 Unfreeze Profile별 학습 파라미터
+
+| Profile | 학습 파라미터 | Core 총합 | 학습 대상 | 필요 config |
+|---------|-------------|----------|----------|------------|
+| **hybrid** | 9.3M | ~347M | adaLN 전체 + adapter + global_embed + conditioner | `adaln` config |
+| **adaln** | 7.4M | ~347M | to_scale_shift_gate (16블록) + global_cond_embedder + conditioner | `adaln` config |
+| **adapter** | 50K | ~340M | input_add_adapter (Conv1d 768→64) + conditioner | prepend OK |
+| **global** | 1.8M | ~341M | to_global_embed (2 linear layers) + conditioner | prepend OK |
+| **minimal** | 1.5K | ~340M | continuous_score.mapper only | prepend OK |
+| **xattn** ★ | 1.8M | ~341M | continuous_score (Fourier+MLP) + to_cond_embed | prepend OK |
+| **xattn_concat** ★ | 2.6M | ~341M | continuous_score + score_concat + to_cond_embed + preprocess_conv | `xattn_concat` config |
+
+> ★ = 실험적으로 검증됨 (Corr=0.256). 나머지 profile은 adaLN 기반으로 실패 확인 (v5-v10).
+> **ICME**: 모든 profile이 Core ≤ 500M. 160M 여유로 추가 conditioner/LoRA 가능.
+> **ISMIR**: 총 파라미터 제한 없음.
 
 ---
 
