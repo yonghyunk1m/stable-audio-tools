@@ -128,8 +128,10 @@ adaLN 설정에서 `continuous_score`는 **두 경로**로 동시에 들어감:
 | **xattn** | ~12 | 1.8M | 497M | continuous_score (Fourier+MLP) + to_cond_embed | prepend OK |
 | **xattn_concat** | ~18 | 2.6M | 497M | continuous_score + score_concat + to_cond_embed + preprocess_conv | `xattn_concat` config 필수 |
 
-> **ICME 500M 제한**: adapter(497.2M), xattn(497M), xattn_concat(497M)이 적합.
-> **ISMIR**: 제한 없음. xattn/xattn_concat 권장 (실험적으로 검증됨).
+> **ICME 500M 제한 (core generative model only)**: VAE encoder/decoder, T5 text encoder는 auxiliary로 제외.
+> Core = DiT(339M) + conditioners(~1M) = **~340M** → 500M 대비 **160M 여유**.
+> 모든 profile이 500M 이내. adaln/hybrid도 504.7M이지만 이는 total이며, core는 ~347M.
+> **ISMIR**: 총 파라미터 제한 없음. xattn/xattn_concat 권장 (실험적으로 검증됨).
 
 ---
 
