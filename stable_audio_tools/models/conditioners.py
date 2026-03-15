@@ -677,15 +677,40 @@ class MultiConditioner(nn.Module):
         import os, json
         
         # 1. Normalize input data (Handle dataloader worker type mismatch)
+        #
+        # collation_fn merges per-sample metadata dicts into a single
+        # batched dict (floats→tensor, strings→list).  We need to unpack
+        # it back into per-sample dicts so each conditioner receives
+        # individual values, not batched tensors.
         batch_list = []
         if isinstance(batch_metadata, dict):
-            batch_list = [batch_metadata]
+            # Detect batched dict: look for tensor values with batch dim > 1
+            batch_size = None
+            for v in batch_metadata.values():
+                if torch.is_tensor(v) and v.ndim >= 1 and v.shape[0] > 1:
+                    batch_size = v.shape[0]
+                    break
+
+            if batch_size is not None:
+                # Unpack batched dict into per-sample dicts
+                for i in range(batch_size):
+                    sample = {}
+                    for k, v in batch_metadata.items():
+                        if torch.is_tensor(v) and v.ndim >= 1:
+                            sample[k] = v[i].item() if v[i].ndim == 0 else v[i]
+                        elif isinstance(v, (list, tuple)) and len(v) == batch_size:
+                            sample[k] = v[i]
+                        else:
+                            sample[k] = v
+                    batch_list.append(sample)
+            else:
+                batch_list = [batch_metadata]
         elif isinstance(batch_metadata, (list, tuple)):
             for x in batch_metadata:
                 # Extract the first element (dict) if wrapped in a tuple
-                if isinstance(x, (list, tuple)) and len(x) > 0: 
+                if isinstance(x, (list, tuple)) and len(x) > 0:
                     batch_list.append(x[0])
-                else: 
+                else:
                     batch_list.append(x)
         
         # 2. Metadata correction and JSON-based Reward Score injection
@@ -731,6 +756,9 @@ class MultiConditioner(nn.Module):
                 # Explicit type defense for the score_bin key
                 if key == "score_bin":
                     val = x.get(key, 0)
+                elif key in ("score_concat", "continuous_score"):
+                    # Score conditioners: default to 0.0 (not "A music song.")
+                    val = x.get(key, x.get(self.default_keys.get(key, key), 0.0))
                 else:
                     val = x.get(key, x.get(self.default_keys.get(key, key), "A music song."))
                 

@@ -186,12 +186,6 @@ class DiffusionTransformer(nn.Module):
         if input_concat_cond is not None:
             if not torch.is_tensor(input_concat_cond):
                 raise TypeError("input_concat_cond must be a tensor or None")
-            # Debug: check batch size mismatch
-            if input_concat_cond.shape[0] != x.shape[0]:
-                print(f"[DEBUG] input_concat_cond batch mismatch: x={x.shape}, concat={input_concat_cond.shape}")
-                # Repeat to match batch size
-                if input_concat_cond.shape[0] == 1:
-                    input_concat_cond = input_concat_cond.expand(x.shape[0], -1, -1)
 
             if input_concat_cond.dim() == 2:
                 input_concat_cond = input_concat_cond.unsqueeze(1)
