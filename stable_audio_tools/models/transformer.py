@@ -797,6 +797,7 @@ class ContinuousTransformer(nn.Module):
         self,
         x,
         prepend_embeds = None,
+        input_add_embeds = None,
         global_cond = None,
         return_info = False,
         use_checkpointing = True,
@@ -813,6 +814,13 @@ class ContinuousTransformer(nn.Module):
         }
 
         x = self.project_in(x)
+
+        if input_add_embeds is not None:
+            if input_add_embeds.shape != x.shape:
+                raise ValueError(
+                    f"input_add_embeds shape mismatch: expected {tuple(x.shape)}, got {tuple(input_add_embeds.shape)}"
+                )
+            x = x + input_add_embeds
 
         if prepend_embeds is not None:
             prepend_length, prepend_dim = prepend_embeds.shape[1:]

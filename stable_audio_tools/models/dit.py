@@ -107,7 +107,7 @@ class DiffusionTransformer(nn.Module):
         self.input_add_use_adapter = input_add_use_adapter and self.input_add_dim > 0
 
         if self.input_add_use_adapter:
-            self.input_add_adapter = nn.Conv1d(self.input_add_dim, io_channels, kernel_size=1, bias=False)
+            self.input_add_adapter = nn.Linear(self.input_add_dim, embed_dim, bias=False)
             nn.init.zeros_(self.input_add_adapter.weight)
 
         dim_in = io_channels + self.input_concat_dim
@@ -186,11 +186,10 @@ class DiffusionTransformer(nn.Module):
         if input_concat_cond is not None:
             if not torch.is_tensor(input_concat_cond):
                 raise TypeError("input_concat_cond must be a tensor or None")
-
-            if input_concat_cond.dim() == 2:
-                input_concat_cond = input_concat_cond.unsqueeze(1)
             if input_concat_cond.dim() != 3:
-                raise ValueError(f"input_concat_cond tensor must be 3D, got shape {tuple(input_concat_cond.shape)}")
+                raise ValueError(
+                    f"input_concat_cond must be canonical rank-3 (B,C,T), got shape {tuple(input_concat_cond.shape)}"
+                )
 
             if self.input_concat_dim > 0 and input_concat_cond.shape[1] != self.input_concat_dim:
                 raise ValueError(
@@ -205,24 +204,19 @@ class DiffusionTransformer(nn.Module):
         if input_add_cond is not None:
             if not torch.is_tensor(input_add_cond):
                 raise TypeError("input_add_cond must be a tensor or None")
-
-            if input_add_cond.dim() == 2:
-                input_add_cond = input_add_cond.unsqueeze(1)
-            if input_add_cond.dim() != 3:
-                raise ValueError(f"input_add_cond tensor must be 3D, got shape {tuple(input_add_cond.shape)}")
+            if input_add_cond.dim() != 2:
+                raise ValueError(
+                    f"input_add_cond must be canonical rank-2 (B,C), got shape {tuple(input_add_cond.shape)}"
+                )
 
             if self.input_add_dim > 0 and input_add_cond.shape[1] != self.input_add_dim:
                 raise ValueError(
                     f"input_add_cond channel mismatch: expected {self.input_add_dim}, got {input_add_cond.shape[1]}"
                 )
 
-            if input_add_cond.shape[2] != x.shape[2]:
-                input_add_cond = F.interpolate(input_add_cond, (x.shape[2],), mode="nearest")
-
             if not self.input_add_use_adapter:
                 raise ValueError("input_add_cond was provided but input_add_use_adapter is disabled")
-
-            x = x + self.input_add_adapter(input_add_cond)
+        input_add_embeds = None
             
         # Get the batch of timestep embeddings
         timestep_embed = self.to_timestep_embed(self.timestep_features(t[:, None])) # (b, embed_dim)
@@ -262,9 +256,22 @@ class DiffusionTransformer(nn.Module):
         if self.patch_size > 1:
             x = rearrange(x, "b (t p) c -> b t (c p)", p=self.patch_size)
 
+        if input_add_cond is not None:
+            input_add_embed = self.input_add_adapter(input_add_cond)
+            input_add_embeds = input_add_embed.unsqueeze(1).expand(-1, x.shape[1], -1)
+
         if self.transformer_type == "continuous_transformer":
             # Masks not currently implemented for continuous transformer
-            output = self.transformer(x, prepend_embeds=prepend_inputs, context=cross_attn_cond, return_info=return_info, exit_layer_ix=exit_layer_ix, **extra_args, **kwargs)
+            output = self.transformer(
+                x,
+                prepend_embeds=prepend_inputs,
+                context=cross_attn_cond,
+                input_add_embeds=input_add_embeds,
+                return_info=return_info,
+                exit_layer_ix=exit_layer_ix,
+                **extra_args,
+                **kwargs,
+            )
 
             if return_info:
                 output, info = output

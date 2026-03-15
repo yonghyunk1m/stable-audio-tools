@@ -171,7 +171,7 @@ class ConditionedDiffusionModelWrapper(nn.Module):
         prepend_cond = None
         prepend_cond_mask = None
 
-        def collect_channelwise_conds(cond_ids: tp.List[str], cond_name: str):
+        def collect_channelwise_temporal_conds(cond_ids: tp.List[str], cond_name: str):
             if len(cond_ids) == 0:
                 return None
 
@@ -197,6 +197,36 @@ class ConditionedDiffusionModelWrapper(nn.Module):
                 ]
 
             return torch.cat(cond_tensors, dim=1)
+
+        def collect_feature_conds(cond_ids: tp.List[str], cond_name: str):
+            if len(cond_ids) == 0:
+                return None
+
+            cond_features = []
+
+            for key in cond_ids:
+                cond_tensor = conditioning_tensors[key][0]
+
+                if len(cond_tensor.shape) == 1:
+                    cond_tensor = cond_tensor.unsqueeze(0)
+
+                if len(cond_tensor.shape) == 2:
+                    feature = cond_tensor
+                elif len(cond_tensor.shape) == 3:
+                    if cond_tensor.shape[1] == 1:
+                        feature = cond_tensor.squeeze(1)
+                    elif cond_tensor.shape[2] == 1:
+                        feature = cond_tensor.squeeze(2)
+                    else:
+                        raise ValueError(
+                            f"{cond_name} conditioner '{key}' must be feature-like (B,C) or singleton-expanded, got {tuple(cond_tensor.shape)}"
+                        )
+                else:
+                    raise ValueError(f"{cond_name} conditioner '{key}' has unsupported shape {tuple(cond_tensor.shape)}")
+
+                cond_features.append(feature)
+
+            return torch.cat(cond_features, dim=1)
 
         if len(self.cross_attn_cond_ids) > 0:
             # Concatenate all cross-attention inputs over the sequence dimension
@@ -240,11 +270,11 @@ class ConditionedDiffusionModelWrapper(nn.Module):
 
         if len(self.input_concat_ids) > 0:
             # Concatenate all input concat conditioning inputs over the channel dimension
-            input_concat_cond = collect_channelwise_conds(self.input_concat_ids, "input concat")
+            input_concat_cond = collect_channelwise_temporal_conds(self.input_concat_ids, "input concat")
 
         if len(self.input_add_ids) > 0:
-            # Concatenate all input add conditioning inputs over the channel dimension
-            input_add_cond = collect_channelwise_conds(self.input_add_ids, "input add")
+            # Concatenate all input add conditioning features over the channel dimension
+            input_add_cond = collect_feature_conds(self.input_add_ids, "input add")
 
         if len(self.prepend_cond_ids) > 0:
             # Concatenate all prepend conditioning inputs over the sequence dimension

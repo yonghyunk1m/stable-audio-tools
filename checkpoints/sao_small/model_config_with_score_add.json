@@ -89,7 +89,7 @@
                 "num_heads": 8,
                 "cond_token_dim": 768,
                 "global_cond_dim": 768,
-                "input_add_dim": 1,
+                "input_add_dim": 768,
                 "input_add_use_adapter": true,
                 "transformer_type": "continuous_transformer",
                 "attn_kwargs": {
