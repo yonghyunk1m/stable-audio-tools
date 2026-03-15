@@ -32,6 +32,8 @@ UNFREEZE_PROFILES = {
     "minimal": ["continuous_score", "score_bin"],
     # Cross-attention: score as cross-attn token, unfreeze conditioner + cross-attn projection
     "xattn": ["continuous_score", "score_bin", "to_cond_embed"],
+    # Dual pathway: cross-attention + input-concat, Fourier embedding
+    "xattn_concat": ["continuous_score", "score_bin", "score_concat", "to_cond_embed", "preprocess_conv"],
 }
 
 
@@ -74,6 +76,7 @@ class ContinuousScoreDatasetWrapper(torch.utils.data.Dataset):
             score_val = NULL_CONDITION_VALUE
             
         metadata['continuous_score'] = score_val
+        metadata['score_concat'] = score_val  # Same value for input-concat pathway
         return audio, metadata
 
 class ExceptionCallback(pl.Callback):
@@ -153,7 +156,8 @@ def zero_init_new_params(model, pretrained_keys: set):
     # This is the ControlNet zero-conv principle:
     #   intermediate (non-zero) → output (zero) → zero effect, but gradients flow.
     KEEP_RANDOM_PATTERNS = [
-        "continuous_score",        # ContinuousScoreConditioner mapper (Linear 1->768)
+        "continuous_score",        # FourierScoreConditioner (Fourier + MLP)
+        "score_concat",            # ScoreInputConcatConditioner (Fourier + MLP)
         "global_cond_embedder.0",  # FIRST linear of embedder (1024->1024), intermediate
         # global_cond_embedder.2 (1024->6144) is OUTPUT → zero-init'd (not listed here)
     ]

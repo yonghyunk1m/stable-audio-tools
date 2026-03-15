@@ -4,7 +4,11 @@ from safetensors.torch import load_file
 from torch.nn.utils import remove_weight_norm
 
 def copy_state_dict(model, state_dict):
-    """Load state_dict to model, but only for keys that match exactly.
+    """Load state_dict to model, handling shape mismatches from input_concat.
+
+    When input_concat_dim > 0 adds extra channels, Conv1d/Linear weights grow.
+    Pretrained weights are zero-padded to fit the new larger shape, preserving
+    the original channels while starting new channels at zero (ControlNet-style).
 
     Args:
         model (nn.Module): model to load state_dict.
@@ -12,11 +16,24 @@ def copy_state_dict(model, state_dict):
     """
     model_state_dict = model.state_dict()
     for key in state_dict:
-        if key in model_state_dict and state_dict[key].shape == model_state_dict[key].shape:
-            if isinstance(state_dict[key], torch.nn.Parameter):
-                # backwards compatibility for serialized parameters
-                state_dict[key] = state_dict[key].data
-            model_state_dict[key] = state_dict[key]
+        if key not in model_state_dict:
+            continue
+        src = state_dict[key]
+        if isinstance(src, torch.nn.Parameter):
+            src = src.data
+        dst_shape = model_state_dict[key].shape
+
+        if src.shape == dst_shape:
+            model_state_dict[key] = src
+        elif len(src.shape) == len(dst_shape) and all(
+            s <= d for s, d in zip(src.shape, dst_shape)
+        ):
+            # Zero-pad: pretrained (64,64,1) → new (80,80,1)
+            padded = torch.zeros(dst_shape, dtype=src.dtype)
+            slices = tuple(slice(0, s) for s in src.shape)
+            padded[slices] = src
+            model_state_dict[key] = padded
+            print(f"  [PAD] {key}: {list(src.shape)} → {list(dst_shape)}")
 
     model.load_state_dict(model_state_dict, strict=False)
 

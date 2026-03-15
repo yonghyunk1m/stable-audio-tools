@@ -24,6 +24,7 @@ import typing as tp
 import gc
 
 from .adp import NumberEmbedder
+from .blocks import FourierFeatures
 from ..inference.utils import set_audio_channels
 from .factory import create_pretransform_from_config
 from .pretransforms import Pretransform
@@ -800,7 +801,12 @@ def create_multi_conditioner_from_conditioning_config(config: tp.Dict[str, tp.An
         elif conditioner_type == 'continuous_score':
             conditioners[id] = ContinuousScoreConditioner(
                 output_dim=conditioner_config.get('output_dim', 768),
-                cond_dim=conditioner_config.get('cond_dim', 1))
+                cond_dim=conditioner_config.get('cond_dim', 1),
+                fourier_dim=conditioner_config.get('fourier_dim', 256))
+        elif conditioner_type == 'score_input_concat':
+            conditioners[id] = ScoreInputConcatConditioner(
+                concat_channels=conditioner_config.get('concat_channels', 16),
+                fourier_dim=conditioner_config.get('fourier_dim', 128))
         elif conditioner_type == "phoneme":
             conditioners[id] = PhonemeConditioner(**conditioner_config)
         elif conditioner_type == "lut":
@@ -899,15 +905,33 @@ class ScoreBinConditioner(Conditioner):
     
 class ContinuousScoreConditioner(nn.Module):
     """
-    Reflects the philosophy of the LatCHs paper:
-    Instead of hard-labeled bins, this module accepts continuous 1D scalar scores 
-    (logits or raw scores) and projects them directly into the conditioning 
-    vector space via a Linear layer.
+    Fourier-feature score conditioner for rich, discriminative embeddings.
+
+    Uses the same FourierFeatures class as DiT's timestep embedding to create
+    distinct high-dimensional patterns for different score values. This is much
+    more expressive than Linear(1, 768) which can only produce a single direction
+    vector scaled by the score value.
+
+    Architecture:
+        score (B,1) → FourierFeatures(1, fourier_dim) → (B, fourier_dim)
+                     → Linear(fourier_dim, output_dim) → SiLU
+                     → Linear(output_dim, output_dim)  → (B, output_dim)
+
+    Null handling: score == -999.0 → zero embedding (for CFG dropout).
     """
-    def __init__(self, output_dim, cond_dim=1):
+    def __init__(self, output_dim, cond_dim=1, fourier_dim=256):
         super().__init__()
         self.output_dim = output_dim
-        self.mapper = nn.Linear(cond_dim, output_dim)
+
+        # Fourier features: same class as timestep embedding in DiT
+        self.fourier_features = FourierFeatures(cond_dim, fourier_dim)
+
+        # MLP: fourier features → output_dim
+        self.mapper = nn.Sequential(
+            nn.Linear(fourier_dim, output_dim),
+            nn.SiLU(),
+            nn.Linear(output_dim, output_dim)
+        )
 
     def forward(self, x, device):
         if isinstance(x, list):
@@ -915,19 +939,76 @@ class ContinuousScoreConditioner(nn.Module):
         else:
             x = torch.as_tensor(x, dtype=torch.float32, device=device).view(-1)
 
-        # Shape: (Batch, 1) for linear input
-        x = x.view(-1, 1)
+        x = x.view(-1, 1)  # (B, 1)
 
-        # Linear projection: (B, 1) -> (B, output_dim)
-        embeds = self.mapper(x)
+        # Fourier encoding + MLP: (B, 1) → (B, fourier_dim) → (B, output_dim)
+        fourier_embed = self.fourier_features(x)  # (B, fourier_dim)
+        embeds = self.mapper(fourier_embed)        # (B, output_dim)
 
-        # CFG Null condition handling (-999.0)
+        # CFG Null condition: score == -999.0 → zero embedding
         null_idx = (x.squeeze(-1) == -999.0)
         if null_idx.any():
             embeds[null_idx] = 0.0
 
-        # Return 2D (B, output_dim) — get_conditioning_inputs will unsqueeze
-        # for cross-attention: (B, output_dim) -> unsqueeze(1) -> (B, 1, output_dim)
-        # for global_cond: (B, output_dim) -> squeeze handled in get_conditioning_inputs
+        mask = torch.ones(embeds.shape[0], 1, device=device)
+        return embeds, mask
+
+
+class ScoreInputConcatConditioner(nn.Module):
+    """
+    Lightweight score conditioner for input channel concatenation pathway.
+
+    Outputs (B, C, 1) where C is small (e.g., 16), to be concatenated with
+    the latent (B, 64, seq_len) along the channel dimension. This provides
+    a direct, unconditional input-level signal that doesn't compete with
+    text tokens in cross-attention.
+
+    Architecture:
+        score (B,1) → FourierFeatures(1, fourier_dim) → (B, fourier_dim)
+                     → Linear(fourier_dim, concat_channels) → (B, C)
+                     → unsqueeze(-1) → (B, C, 1)
+    """
+    def __init__(self, concat_channels=16, fourier_dim=128):
+        super().__init__()
+        self.concat_channels = concat_channels
+        self.fourier_features = FourierFeatures(1, fourier_dim)
+        self.mapper = nn.Sequential(
+            nn.Linear(fourier_dim, concat_channels * 4),
+            nn.SiLU(),
+            nn.Linear(concat_channels * 4, concat_channels)
+        )
+
+    def forward(self, x, device):
+        if isinstance(x, list):
+            # Each item may be float, tensor, or (value, weight) tuple
+            vals = []
+            for item in x:
+                if isinstance(item, (tuple, list)):
+                    item = item[0]
+                if torch.is_tensor(item):
+                    item = item.float().view(-1)
+                else:
+                    item = torch.tensor([float(item)], dtype=torch.float32)
+                vals.append(item)
+            x = torch.cat(vals).to(device)
+        else:
+            x = torch.as_tensor(x, dtype=torch.float32, device=device).view(-1)
+
+        batch_size = x.shape[0]
+        x = x.view(-1, 1)  # (B, 1)
+
+        fourier_embed = self.fourier_features(x)       # (B, fourier_dim)
+        embeds = self.mapper(fourier_embed)             # (B, concat_channels)
+
+        # Null handling
+        null_idx = (x.squeeze(-1) == -999.0)
+        if null_idx.any():
+            embeds[null_idx] = 0.0
+
+        # Ensure batch size is correct (guard against shape issues)
+        embeds = embeds[:batch_size]
+
+        # Output (B, C, 1) for channel-wise concat in DiT
+        embeds = embeds.unsqueeze(-1)                   # (B, C, 1)
         mask = torch.ones(embeds.shape[0], 1, device=device)
         return embeds, mask
