@@ -125,8 +125,11 @@ adaLN 설정에서 `continuous_score`는 **두 경로**로 동시에 들어감:
 | **adapter** | 3 | 50K | 497.2M | input_add_adapter (Conv1d 768→64) + conditioner | prepend OK |
 | **global** | 4 | 1.8M | 499.0M | to_global_embed (2 linear layers) + conditioner | prepend OK |
 | **minimal** | 2 | 1.5K | 497M | continuous_score.mapper (Linear 1→768) only | prepend OK |
+| **xattn** | ~12 | 1.8M | 497M | continuous_score (Fourier+MLP) + to_cond_embed | prepend OK |
+| **xattn_concat** | ~18 | 2.6M | 497M | continuous_score + score_concat + to_cond_embed + preprocess_conv | `xattn_concat` config 필수 |
 
-> **ICME 500M 제한**: adapter(497.2M), global(499.0M)만 적합. adaln/hybrid는 504.7M으로 초과.
+> **ICME 500M 제한**: adapter(497.2M), xattn(497M), xattn_concat(497M)이 적합.
+> **ISMIR**: 제한 없음. xattn/xattn_concat 권장 (실험적으로 검증됨).
 
 ---
 
@@ -215,10 +218,25 @@ adaLN 설정에서 `continuous_score`는 **두 경로**로 동시에 들어감:
 | 16 | `scripts/run_experiments.sh` | 전체 실험 케이스 마스터 런처 생성 |
 | 17 | `scripts/run_finetune_case3.sh` | Python 경로, 새 환경변수, help 텍스트 업데이트 |
 
-### 7.4 Pretrained Weight 호환성
-- `copy_state_dict()`가 `strict=False`로 동작하여 매칭되는 키만 로드
-- adaLN config 사용 시 23개 새 파라미터는 랜덤 초기화 상태로 학습 시작
-- `input_add_adapter`는 zero-init (Conv1d weight=0)이므로 초기에 pretrained 동작 보존
+### 7.4 버그 수정 및 개선 (2026-03-15) — Score Conditioning 파이프라인
+
+| # | 파일 | 수정 내용 | 이유 |
+|---|------|----------|------|
+| 18 | `conditioners.py` | `ContinuousScoreConditioner`: Linear(1,768) → FourierFeatures + MLP | 스코어 값별 구분력 향상 (timestep embedding과 동일 방식) |
+| 19 | `conditioners.py` | `ScoreInputConcatConditioner` 신규 | 16채널 input-concat 경로 (cross-attn 경쟁 없는 직접 주입) |
+| 20 | `conditioners.py` | MultiConditioner: batched dict 언패킹 | collation_fn이 만든 batched dict → per-sample dict 복원 (DDP batch 불일치 해결) |
+| 21 | `conditioners.py` | score conditioner 기본값 0.0 | metadata에 키 없을 때 "A music song." 대신 0.0 반환 |
+| 22 | `dit.py` | CFG uncond: `global_embed` → `zeros_like` | 비조건부 패스에 null 임베딩 사용 (스코어 CFG 증폭 가능하게) |
+| 23 | `dit.py` | CFG uncond: `input_concat_cond` → `zeros_like` | input-concat 경로도 동일 적용 |
+| 24 | `utils.py` | `copy_state_dict`: shape 불일치 시 zero-padding | input_concat_dim 추가 시 pretrained 가중치 보존 (ControlNet 방식) |
+| 25 | `finetune.py` | `xattn`, `xattn_concat` 언프리즈 프로파일 추가 | cross-attention 기반 스코어 컨디셔닝 |
+| 26 | `finetune.py` | `score_concat` 메타데이터 자동 추가 | `continuous_score`와 동일 값 dual-path 전달 |
+| 27 | `finetune.py` | zero_init: `score_concat` 패턴 추가 | 새 conditioner 파라미터 소규모 랜덤 초기화 |
+
+### 7.5 Pretrained Weight 호환성 (업데이트)
+- `copy_state_dict()`가 shape 일치 시 직접 로드, 불일치 시 zero-padding 적용
+- input_concat_dim=16 추가 시: `preprocess_conv` (64,64,1)→(80,80,1), `project_in` (1024,64)→(1024,80) 자동 패딩
+- 새 파라미터는 `zero_init_new_params()`에서 ControlNet 패턴 적용 (중간=랜덤, 출력=zero)
 
 ---
 
@@ -262,15 +280,26 @@ music-ranknet/
 
 ---
 
-## 9. 현재 진행 상태 & 다음 단계
+## 9. 현재 진행 상태 & 다음 단계 (2026-03-15 업데이트)
 
-### 진행 중 (2026-03-14)
-- [x] Case 3b v5 (adaln, `model_config_with_score_adaln.json`, 7.4M trainable) 학습 중 — GPU 8,9
-- [x] MTG-Jamendo feature 추출 중 — GPU 0,1 (54,753 tracks, ~27시간 예상)
+### 완료
+- [x] adaLN 경로 검증 → **실패 확인** (v5-v10, 6회 시도, Corr~0)
+- [x] Cross-attention 경로 전환 → **첫 성공** (xattn v2: Corr=0.256, Mono=0.597)
+- [x] Fourier score embedding 구현 (FourierFeatures + MLP, timestep과 동일 방식)
+- [x] Input-concat 16채널 이중 경로 구현 + DDP 호환 수정
+- [x] CFG 수정: uncond 패스에 zeros 사용 (스코어 CFG 증폭 가능)
+- [x] Score dropout 30%로 증가
+
+### 현재 학습 중
+| 실험 | GPU | Config | 학습 파라미터 | 설명 |
+|------|-----|--------|-------------|------|
+| Fourier+xattn v1 | 8,9 | `model_config_with_score_xattn.json` | 2.6M | Fourier embedding + cross-attn |
+| Fourier+xattn+concat v10 | 2,3 | `model_config_with_score_xattn_concat.json` | 2.6M | + 16채널 input-concat |
 
 ### TODO
-- [ ] v5 step 5000 validation에서 correlation/monotonicity 개선 확인
+- [ ] Step 5000 validation에서 Fourier embedding 효과 확인 (Corr > 0.25 기대)
+- [ ] xattn vs xattn+concat 비교
+- [ ] Score-specific CFG scale 실험 (추론 시 스코어 CFG만 별도 증폭)
 - [ ] Case 2 (SFT baseline) 실행하여 비교군 확보
-- [ ] Case 3a (adapter), Case 3c (hybrid) 실행
-- [ ] ICME Track: Jamendo scoring → threshold 계산 → 학습 파이프라인 구축
-- [ ] Score normalization 전략 검토 (현재 raw score, 범위 ~[-5.8, +1.5])
+- [ ] Case 4 (filtered FMA) 실행
+- [ ] ICME Track: Jamendo scoring → threshold → 학습 구축

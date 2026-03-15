@@ -452,16 +452,56 @@ DiT 논문에서 adaLN은 **하나의 conditioning signal**에 대해 설계되�
 
 ---
 
-## 9. 결론 및 Action Items
+## 9. 실험 결과에 기반한 결론 (2026-03-15 업데이트)
 
-### 즉시 적용 가능 (config 변경만)
-1. **`seconds_total`을 `global_cond_ids`에서 제거** — sum-merge 해소
-2. **`continuous_score`를 `input_add_ids`에서 제거** — 단일 경로화
+### adaLN 경로: 실패 확인 (v5-v10, 6회 시도)
 
-### 실험으로 검증 필요
-3. adaLN-only (score 전용) vs adaLN+input_add (dual-path) 성능 비교
-4. Prepend mode에서도 sum-merge 해소 시 성능 변화 확인
+| 시도 | 변경 | Corr | 실패 원인 |
+|------|------|------|----------|
+| v5 | sum-merge 해소 (score only) | -0.03 | global_cond_embedder 죽은 그래디언트 |
+| v6 | 장기 학습 (3 epoch) | -0.12~+0.10 | 0 근처 요동, 학습 동기 없음 |
+| v7 | ControlNet 초기화 (embedder.0 랜덤) | ~0 | 그래디언트 흐르나 신호 너무 약함 |
+| v8 | 전체 랜덤 초기화 | NaN | fp16 overflow |
+| v9 | to_global_embed 언프리즈 | ~0 | 프로젝션 적응 불충분 |
+| v10 | CFG uncond=zeros | -0.04 | 근본: adaLN이 약한 신호에 부적합 |
 
-### 중장기 고려
-5. Separate adaLN head (score와 seconds_total 각각 독립 embedder)
-6. Score normalization ([0,1] 범위 정규화 vs raw score)
+**근본 원인**: 디노이징 MSE 손실에서 스코어는 **잉여 정보**. 텍스트+오디오 잠재 벡터만으로 노이즈를 예측할 수 있으므로, 모델은 adaLN을 통한 간접적 스코어 신호를 무시하는 것이 최적. adaLN 파라미터(global_cond_embedder, to_scale_shift_gate)가 전부 새로 학습되어야 하는 점도 부담.
+
+### Cross-Attention 경로: 성공 확인 (Corr=0.256)
+
+| 시도 | Embedding | Dropout | Best Corr | Best Mono |
+|------|-----------|---------|-----------|-----------|
+| xattn v1 | Linear(1,768) | 15% | 0.120 | 0.532 |
+| xattn v2 | Linear(1,768) | 15% | **0.256** | **0.597** |
+
+**성공 요인**: 사전학습된 cross-attention이 이미 토큰에서 정보를 추출하는 방법을 알고 있음. 스코어를 하나의 토큰으로 추가하면 기존 메커니즘을 자연스럽게 활용.
+
+### 현재 진행: Fourier Embedding + 이중 경로
+
+**개선 3가지**:
+1. **FourierScoreConditioner**: Linear(1→768) 대신 FourierFeatures(1→256) + MLP(256→768→768). score=0.1과 0.9가 완전히 다른 768d 패턴 생성
+2. **ScoreInputConcatConditioner**: 16채널 input-concat 추가 (cross-attn과 경쟁 없는 직접 경로)
+3. **Score dropout 30%**: CFG 대비 강화
+
+```
+score (스칼라)
+    │
+    ├──→ [FourierFeatures + MLP]  → (768d)  → Cross-Attention 토큰 (66개 중 1개)
+    │         ↑ 사전학습된 어텐션 메커니즘 활용
+    │
+    └──→ [FourierFeatures + MLP]  → (16d, 1) → Input-Concat (64+16=80 채널)
+              ↑ 어텐션 경쟁 없음, 직접 입력 레벨 주입
+```
+
+| 실험 | GPU | 경로 | 상태 |
+|------|-----|------|------|
+| Fourier+xattn v1 | 8,9 | cross-attn only | 학습 중 |
+| Fourier+xattn+concat v10 | 2,3 | cross-attn + input-concat | 학습 중 |
+
+### 최종 권장 전략
+
+1. **Primary**: Cross-attention + Fourier embedding (검증됨)
+2. **Auxiliary**: Input-concat 16채널 (검증 중)
+3. **Dropout**: 30% score CFG dropout
+4. **추론**: Score-specific CFG scale 실험 필요
+5. ~~adaLN~~ — 약한 스코어 신호에 부적합 (6회 실패로 확인)
