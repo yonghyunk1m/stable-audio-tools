@@ -293,31 +293,61 @@ Metric 계산 & wandb 로깅:
 - DiT 16블록에 `to_scale_shift_gate` + `global_cond_embedder` 파라미터 추가 (7.4M params)
 - 총 504.7M params (ISMIR 대상이므로 500M 제한 무관)
 
-### 현재 학습 상태 (v5)
-- **wandb**: `case3b_adaln_v5` ([link](https://wandb.ai/yonghyunk1m/music-steerability-study))
-- **GPU**: CUDA 8,9 (NVIDIA RTX A5000)
-- **Model config**: `model_config_with_score_adaln.json` (adaLN 활성화, 504.7M)
-- **Profile**: adaln (7.4M trainable)
-- **Target**: ISMIR Track (FMA-Large)
+### adaLN 실험 결과 요약 (v5-v10): 실패
+
+| 버전 | 변경사항 | Corr@5K | 결과 |
+|------|---------|---------|------|
+| v5 | adaln pure (seconds_total 제거) | -0.03 | sum-merge 제거했으나 무효 |
+| v6 | v5 장기 학습 (3 epoch) | -0.12~+0.10 | 0 근처 요동 |
+| v7 | dead gradient 수정 (embedder.0 소규모 랜덤) | ~0 | ControlNet 패턴 적용했으나 무효 |
+| v8 | embedder 전체 랜덤 초기화 | NaN | fp16 overflow |
+| v9 | to_global_embed 언프리즈 | ~0 | 프리트레인 프로젝션 적응 시도 |
+| v10 | CFG 수정 (uncond=zeros) | -0.04 | CFG가 스코어를 증폭하도록 수정 |
+
+**결론**: adaLN은 약한 스코어 신호에 부적합. 새 파라미터(global_cond_embedder, to_scale_shift_gate)를 처음부터 학습해야 하며, 디노이징 손실이 스코어를 무시해도 최소화 가능하므로 학습 동기 부족.
+
+### Cross-Attention 전환 (xattn v1-v2): 첫 성공
+
+| 버전 | 설정 | Best Corr | Mono |
+|------|------|-----------|------|
+| xattn v1 | Linear(1,768) + xattn + 15% dropout | 0.120 (step 30K) | 0.532 |
+| xattn v2 | 동일 | **0.256** (step 20K) | **0.575** |
+
+사전학습된 cross-attention 메커니즘이 스코어 토큰을 자연스럽게 처리. adaLN과 달리 새 파라미터가 거의 없음 (Linear 769개 + to_cond_embed ~1.8M).
+
+### Fourier Score Embedding + 이중 경로 (현재 진행 중)
+
+**개선점**:
+1. **FourierScoreConditioner**: Linear(1,768) → FourierFeatures + MLP. score=0.1과 score=0.9가 완전히 다른 768d 패턴 생성 (timestep embedding과 동일 방식)
+2. **ScoreInputConcatConditioner**: 16채널 input-concat 경로 추가. cross-attention과 경쟁 없이 직접 입력 레벨 주입
+3. **Score dropout 30%**: CFG 대비 강화
+4. **DDP batch dict 언패킹**: collation_fn이 만든 batched dict를 per-sample dict로 복원
+
+| 실험 | GPU | 경로 | 상태 |
+|------|-----|------|------|
+| Fourier+xattn v1 | 8,9 | cross-attn only | 학습 중 |
+| Fourier+xattn+concat v10 | 2,3 | cross-attn + input-concat | 학습 중 |
 
 ---
 
-## 6. Git Commit History
+## 6. 핵심 디버깅 교훈
 
-```
-7afaeef  docs: add debugging log for 2026-03-14 reward monitor pipeline fixes
-2be308a  fix: resolve laion_clap 1.1.4 compat issues (position_ids + tokenizer squeeze)
-f843a3f  fix: align CLAP/text extraction with pre-scoring pipeline
-1fb5dd7  fix: correct reward thresholds, remove baseline null samples, stabilize sample_rate access
-```
+1. **설정-프로파일 일치 확인**: prepend config + adaln profile = no-op (v1-v4)
+2. **ControlNet 제로 초기화**: 출력 레이어만 zero, 중간 레이어는 랜덤 유지 (v7-v8)
+3. **CFG uncond 패스**: 반드시 null 임베딩(zeros) 사용 (v10)
+4. **collation_fn 주의**: batched dict는 MultiConditioner에서 per-sample로 언패킹 필요
+5. **검증된 경로 우선**: 새 파라미터가 필요한 경로(adaLN)보다 기존 경로(cross-attn) 활용
 
 ---
 
 ## 7. 남은 과제 (Next Steps)
 
-- [ ] v5 step 5000 validation에서 correlation/monotonicity 개선 확인
-- [ ] Case 2 (SFT baseline), Case 3a (adapter), Case 3c (hybrid) 실행
-- [ ] ICME Track: 500M 파라미터 제한 → adapter(497.2M) 또는 global(499.0M) profile만 사용 가능
-- [ ] Score normalization 전략 검토 (현재 raw score, 범위 ~[-5.8, +1.5])
-- [ ] MTG-Jamendo feature 추출 진행 중 (GPU 0,1 / ~27시간 예상)
-- [ ] MTG-Jamendo 데이터셋 준비 (ICME Grand Challenge)
+- [x] adaLN 경로 검증 → 실패 확인 (v5-v10)
+- [x] Cross-attention 경로 전환 → 첫 양의 상관 확인 (Corr=0.256)
+- [x] Fourier score embedding 구현 및 적용
+- [x] Input-concat 이중 경로 구현 및 DDP 호환 수정
+- [ ] Fourier+xattn step 5000 validation에서 Corr 개선 확인
+- [ ] Fourier+xattn+concat vs Fourier+xattn 비교
+- [ ] Score-specific CFG scale 실험 (추론 시 스코어만 cfg 증폭)
+- [ ] Case 2 (SFT baseline), Case 4 (filtered FMA) 실행
+- [ ] MTG-Jamendo 스코어링 파이프라인 완료 (ICME)
