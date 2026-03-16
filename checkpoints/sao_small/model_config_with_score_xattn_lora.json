@@ -76,7 +76,7 @@
                 "seconds_total",
                 "continuous_score"
             ],
-            "global_cond_ids": [],
+            "global_cond_ids": ["seconds_total"],
             "diffusion_objective": "rf_denoiser",
             "type": "dit",
             "config": {
@@ -86,6 +86,7 @@
                 "num_heads": 8,
                 "cond_token_dim": 768,
                 "cond_embed_lora_rank": 8,
+                "global_cond_dim": 768,
                 "global_cond_type": "prepend",
                 "transformer_type": "continuous_transformer",
                 "attn_kwargs": {
