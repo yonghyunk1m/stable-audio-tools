@@ -337,16 +337,25 @@ Metric 계산 & wandb 로깅:
 3. **CFG uncond 패스**: 반드시 null 임베딩(zeros) 사용 (v10)
 4. **collation_fn 주의**: batched dict는 MultiConditioner에서 per-sample로 언패킹 필요
 5. **검증된 경로 우선**: 새 파라미터가 필요한 경로(adaLN)보다 기존 경로(cross-attn) 활용
+6. **to_cond_embed 언프리즈는 위험**: 66개 토큰 공유 프로젝션을 1개 토큰 때문에 바꾸면 나머지 65개 텍스트 토큰 품질 붕괴 (Classical, Blues, Lo-Fi 무음화)
+7. **LoRA로 해결**: rank=8 저랭크 어댑터로 변화량 제한하면서 적응 가능
+8. **seconds_total 경로 분리**: global_cond(prepend)에 복원하여 score와 disentangle
 
 ---
 
-## 7. 남은 과제 (Next Steps)
+## 7. 남은 과제 (Next Steps, 2026-03-16 업데이트)
 
 - [x] adaLN 경로 검증 → 실패 확인 (v5-v10)
 - [x] Cross-attention 경로 전환 → 첫 양의 상관 확인 (Corr=0.256)
 - [x] Fourier score embedding 구현 및 적용
-- [x] Input-concat 이중 경로 구현 및 DDP 호환 수정
-- [ ] Fourier+xattn step 5000 validation에서 Corr 개선 확인
+- [x] to_cond_embed 언프리즈가 생성 품질 훼손하는 것 발견 및 진단
+- [x] LoRA adapter 구현 (rank=8, lora_B zero-init)
+- [x] seconds_total을 global_cond(prepend)에 복원 (disentanglement)
+- [ ] **Fourier+LoRA v2 validation 확인 (현재 진행 중, GPU 8,9)**
+- [ ] 생성 품질 RMS 검증 (프리트레인 대비 붕괴 없는지)
+- [ ] Score-specific CFG scale 실험
+- [ ] 캡션 증강 (ICME 프롬프트 형식 맞춤)
+- [ ] LoRA rank 조정 또는 cross-attention Q/K/V LoRA 확장
 - [ ] Fourier+xattn+concat vs Fourier+xattn 비교
 - [ ] Score-specific CFG scale 실험 (추론 시 스코어만 cfg 증폭)
 - [ ] Case 2 (SFT baseline), Case 4 (filtered FMA) 실행
