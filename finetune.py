@@ -34,6 +34,8 @@ UNFREEZE_PROFILES = {
     "xattn": ["continuous_score", "score_bin", "to_cond_embed"],
     # Dual pathway: cross-attention + input-concat, Fourier embedding
     "xattn_concat": ["continuous_score", "score_bin", "score_concat", "to_cond_embed", "preprocess_conv"],
+    # LoRA on cross-attention projection: preserves pretrained text while adapting for score
+    "lora_xattn": ["continuous_score", "score_bin", "cond_embed_lora"],
 }
 
 
@@ -158,7 +160,9 @@ def zero_init_new_params(model, pretrained_keys: set):
     KEEP_RANDOM_PATTERNS = [
         "continuous_score",        # FourierScoreConditioner (Fourier + MLP)
         "score_concat",            # ScoreInputConcatConditioner (Fourier + MLP)
+        "cond_embed_lora_A",       # LoRA down-projection (random init for gradient flow)
         "global_cond_embedder.0",  # FIRST linear of embedder (1024->1024), intermediate
+        # cond_embed_lora_B is OUTPUT → zero-init'd (not listed here = zero by default)
         # global_cond_embedder.2 (1024->6144) is OUTPUT → zero-init'd (not listed here)
     ]
 

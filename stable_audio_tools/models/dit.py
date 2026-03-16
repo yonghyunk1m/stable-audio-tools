@@ -82,6 +82,16 @@ class DiffusionTransformer(nn.Module):
                 nn.SiLU(),
                 nn.Linear(cond_embed_dim, cond_embed_dim, bias=False)
             )
+
+            # LoRA adapter for cross-attention projection.
+            # Allows small adaptation for score tokens without destroying
+            # the pretrained text projection.  lora_B is zero-init so
+            # the model starts with exactly pretrained behavior.
+            lora_rank = kwargs.pop("cond_embed_lora_rank", 0)
+            if lora_rank > 0:
+                self.cond_embed_lora_A = nn.Linear(cond_token_dim, lora_rank, bias=False)
+                self.cond_embed_lora_B = nn.Linear(lora_rank, cond_embed_dim, bias=False)
+                nn.init.zeros_(self.cond_embed_lora_B.weight)
         else:
             cond_embed_dim = 0
 
@@ -164,7 +174,10 @@ class DiffusionTransformer(nn.Module):
         **kwargs):
 
         if cross_attn_cond is not None:
+            cond_input = cross_attn_cond
             cross_attn_cond = self.to_cond_embed(cross_attn_cond)
+            if hasattr(self, 'cond_embed_lora_B'):
+                cross_attn_cond = cross_attn_cond + self.cond_embed_lora_B(self.cond_embed_lora_A(cond_input))
 
         if global_embed is not None:
             # Project the global conditioning to the embedding dimension
