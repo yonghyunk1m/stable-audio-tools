@@ -1,0 +1,10 @@
+{
+  "dataset_type": "audio_dir",
+  "datasets": [
+    {
+      "id": "fma_scored",
+      "path": "/home/yonghyun/fma/data/fma_large",
+      "custom_metadata_path": "/home/yonghyun/stable-audio-tools/configs/metadata_fma_scored_top50.jsonl"
+    }
+  ]
+}

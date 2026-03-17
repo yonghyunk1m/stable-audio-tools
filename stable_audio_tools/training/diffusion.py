@@ -1,5 +1,6 @@
 import pytorch_lightning as pl
 import gc
+import os
 import random
 import torch
 import torchaudio
@@ -460,6 +461,20 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         })
 
         loss, losses = self.losses(loss_info)
+
+        # Score-weighted loss: upweight high-quality samples
+        if os.environ.get("SA_SCORE_WEIGHTED_LOSS", "0") == "1":
+            score_min = float(os.environ.get("SA_SCORE_MIN", "-1.52"))
+            score_max = float(os.environ.get("SA_SCORE_MAX", "0.91"))
+            if isinstance(metadata, (list, tuple)):
+                scores = torch.tensor([m.get('reward_score', 0.0) for m in metadata],
+                                      device=loss.device, dtype=loss.dtype)
+            else:
+                scores = metadata.get('reward_score', torch.zeros(1, device=loss.device))
+                if not torch.is_tensor(scores):
+                    scores = torch.tensor([scores], device=loss.device, dtype=loss.dtype)
+            weight = ((scores - score_min) / (score_max - score_min + 1e-8)).clamp(0.1, 1.0)
+            loss = loss * weight.mean()
 
         p.tick("loss")
 
