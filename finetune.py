@@ -36,6 +36,8 @@ UNFREEZE_PROFILES = {
     "xattn_concat": ["continuous_score", "score_bin", "score_concat", "to_cond_embed", "preprocess_conv"],
     # LoRA on cross-attention projection: preserves pretrained text while adapting for score
     "lora_xattn": ["continuous_score", "score_bin", "cond_embed_lora"],
+    # Separate score projection: dedicated to_score_embed for score token, to_cond_embed frozen for text/time
+    "separate_score_proj": ["continuous_score", "score_bin", "to_score_embed"],
 }
 
 
@@ -162,8 +164,10 @@ def zero_init_new_params(model, pretrained_keys: set):
         "score_concat",            # ScoreInputConcatConditioner (Fourier + MLP)
         "cond_embed_lora_A",       # LoRA down-projection (random init for gradient flow)
         "global_cond_embedder.0",  # FIRST linear of embedder (1024->1024), intermediate
+        "to_score_embed.0",        # FIRST linear of score projection (intermediate, gradient flow)
         # cond_embed_lora_B is OUTPUT → zero-init'd (not listed here = zero by default)
         # global_cond_embedder.2 (1024->6144) is OUTPUT → zero-init'd (not listed here)
+        # to_score_embed.2 is OUTPUT → zero-init'd (starts with zero effect)
     ]
 
     zero_count = 0

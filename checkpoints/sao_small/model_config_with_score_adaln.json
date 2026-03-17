@@ -15,8 +15,20 @@
                     "config": {
                         "in_channels": 2,
                         "channels": 128,
-                        "c_mults": [1, 2, 4, 8, 16],
-                        "strides": [2, 4, 4, 8, 8],
+                        "c_mults": [
+                            1,
+                            2,
+                            4,
+                            8,
+                            16
+                        ],
+                        "strides": [
+                            2,
+                            4,
+                            4,
+                            8,
+                            8
+                        ],
                         "latent_dim": 128,
                         "use_snake": true
                     }
@@ -26,8 +38,20 @@
                     "config": {
                         "out_channels": 2,
                         "channels": 128,
-                        "c_mults": [1, 2, 4, 8, 16],
-                        "strides": [2, 4, 4, 8, 8],
+                        "c_mults": [
+                            1,
+                            2,
+                            4,
+                            8,
+                            16
+                        ],
+                        "strides": [
+                            2,
+                            4,
+                            4,
+                            8,
+                            8
+                        ],
                         "latent_dim": 64,
                         "use_snake": true,
                         "final_tanh": false
@@ -111,7 +135,10 @@
                     "type": "AdamW",
                     "config": {
                         "lr": 1e-05,
-                        "betas": [0.9, 0.95],
+                        "betas": [
+                            0.9,
+                            0.95
+                        ],
                         "eps": 1e-08,
                         "weight_decay": 0.01,
                         "foreach": true
@@ -121,52 +148,54 @@
         },
         "demo": {
             "demo_every": 2500,
-            "demo_steps": 8,
+            "demo_steps": 50,
             "num_demos": 8,
             "demo_cond": [
                 {
                     "prompt": "drum breaks 174 BPM",
                     "seconds_total": 10,
-                    "continuous_score": 10.0
+                    "continuous_score": 0.91
                 },
                 {
                     "prompt": "People talking in a crowded cafe",
                     "seconds_total": 10,
-                    "continuous_score": 10.0
+                    "continuous_score": 0.91
                 },
                 {
                     "prompt": "A short, beautiful piano riff in C minor",
                     "seconds_total": 10,
-                    "continuous_score": 10.0
+                    "continuous_score": 0.91
                 },
                 {
                     "prompt": "Tight Snare Drum",
                     "seconds_total": 10,
-                    "continuous_score": 10.0
+                    "continuous_score": -0.02
                 },
                 {
                     "prompt": "A dog barking next to a waterfall",
                     "seconds_total": 10,
-                    "continuous_score": 10.0
+                    "continuous_score": -0.02
                 },
                 {
                     "prompt": "Glitchy bass design",
                     "seconds_total": 10,
-                    "continuous_score": 10.0
+                    "continuous_score": 0.6
                 },
                 {
                     "prompt": "Synth pluck arp with reverb and delay, 128 BPM",
                     "seconds_total": 10,
-                    "continuous_score": 10.0
+                    "continuous_score": 0.6
                 },
                 {
                     "prompt": "Birds singing in the forest",
                     "seconds_total": 10,
-                    "continuous_score": 10.0
+                    "continuous_score": -0.78
                 }
             ],
             "demo_cfg_scales": [
-                1, 3, 5
+                3,
+                5,
+                7
             ]
         }
     }

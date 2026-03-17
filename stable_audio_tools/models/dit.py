@@ -92,6 +92,17 @@ class DiffusionTransformer(nn.Module):
                 self.cond_embed_lora_A = nn.Linear(cond_token_dim, lora_rank, bias=False)
                 self.cond_embed_lora_B = nn.Linear(lora_rank, cond_embed_dim, bias=False)
                 nn.init.zeros_(self.cond_embed_lora_B.weight)
+
+            # Separate score projection: dedicated projection for the last
+            # N tokens (score), keeping to_cond_embed frozen for text/time.
+            # This avoids cross-contamination between score and text tokens.
+            self.score_cond_num_tokens = kwargs.pop("score_cond_num_tokens", 0)
+            if self.score_cond_num_tokens > 0:
+                self.to_score_embed = nn.Sequential(
+                    nn.Linear(cond_token_dim, cond_embed_dim, bias=False),
+                    nn.SiLU(),
+                    nn.Linear(cond_embed_dim, cond_embed_dim, bias=False)
+                )
         else:
             cond_embed_dim = 0
 
@@ -175,9 +186,22 @@ class DiffusionTransformer(nn.Module):
 
         if cross_attn_cond is not None:
             cond_input = cross_attn_cond
-            cross_attn_cond = self.to_cond_embed(cross_attn_cond)
-            if hasattr(self, 'cond_embed_lora_B'):
-                cross_attn_cond = cross_attn_cond + self.cond_embed_lora_B(self.cond_embed_lora_A(cond_input))
+
+            if self.score_cond_num_tokens > 0 and hasattr(self, 'to_score_embed'):
+                # Split: text/time tokens use frozen to_cond_embed,
+                # score token(s) use dedicated to_score_embed
+                n_score = self.score_cond_num_tokens
+                main_tokens = cond_input[:, :-n_score, :]     # (B, 65, 768)
+                score_tokens = cond_input[:, -n_score:, :]    # (B, 1, 768)
+
+                main_proj = self.to_cond_embed(main_tokens)   # frozen
+                score_proj = self.to_score_embed(score_tokens) # trainable
+
+                cross_attn_cond = torch.cat([main_proj, score_proj], dim=1)
+            else:
+                cross_attn_cond = self.to_cond_embed(cross_attn_cond)
+                if hasattr(self, 'cond_embed_lora_B'):
+                    cross_attn_cond = cross_attn_cond + self.cond_embed_lora_B(self.cond_embed_lora_A(cond_input))
 
         if global_embed is not None:
             # Project the global conditioning to the embedding dimension
