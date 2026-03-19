@@ -94,11 +94,11 @@ Collaborator unified model architecture:
 
 ### 5.1 Data preparation
 1. [x] MTG-Jamendo 55K tracks (full length, ~508GB)
-2. [IN PROGRESS] Vocal separation via Mel-Band Roformer (GPU 0-3, ~2-3 days)
+2. [IN PROGRESS] Vocal separation via Mel-Band Roformer (GPU 0-3, ~2 days remaining)
 3. [x] Qwen2-Audio tag→caption: 54,753 generated (ICME test prompt style)
 4. [x] ICME reference captions downloaded (55,701 from organizers, Qwen + MusicFlamingo)
-5. [IN PROGRESS] Reward model retraining with new architecture (text-aware + audio-only)
-6. [ ] Re-score Jamendo with new models
+5. [x] Reward models retrained with new 4-layer architecture (text-aware + audio-only)
+6. [x] Jamendo re-scored with new text-aware model → `metadata_jamendo_scored_new.jsonl`
 
 ### 5.2 Caption strategy
 - **ICME test prompts**: Tags → Qwen2-Audio → short caption (<100 words)
@@ -126,9 +126,9 @@ All three: scratch training (random init).
 | Task | GPU | Status |
 |------|-----|--------|
 | Vocal separation | 0-3 | Running (~2 days remaining) |
-| adaLN gate-init v1 | 8-9 | Running (Jamendo data, proper init) |
-| Reward model text-aware | 0 | Training (new 4-layer arch) |
-| Reward model audio-only | 1 | Training (new 4-layer arch) |
+| adaLN gate-init v3 | 8-9 | Running (Jamendo, fixed reward monitor) |
+| Reward models (4-layer) | — | Complete (text-aware + audio-only) |
+| Jamendo re-scoring | — | Complete (54,330 tracks, text-aware) |
 | Qwen captions | — | Complete (54,753) |
 | Disk space | — | ~580GB free |
 
