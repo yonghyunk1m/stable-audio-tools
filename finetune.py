@@ -172,10 +172,24 @@ def zero_init_new_params(model, pretrained_keys: set):
 
     zero_count = 0
     keep_count = 0
+    gate_count = 0
     with torch.no_grad():
         for name, param in model.named_parameters():
             if name not in pretrained_keys:
-                if any(pat in name for pat in KEEP_RANDOM_PATTERNS):
+                if "to_scale_shift_gate" in name:
+                    # adaLN gate initialization for pretrained models.
+                    # to_scale_shift_gate has 6*dim values: [scale_sa, shift_sa, gate_sa, scale_ff, shift_ff, gate_ff]
+                    # scale=0 → (1+0)=1 (identity), shift=0 → no shift
+                    # gate must be NEGATIVE so sigmoid(1 - gate) ≈ 1.0 (passthrough)
+                    # gate=0 → sigmoid(1) = 0.73 → 27% signal loss per block → 0.73^16 ≈ 0.01
+                    # gate=-10 → sigmoid(11) ≈ 1.0 → full passthrough ✓
+                    dim = param.shape[0] // 6
+                    param.zero_()
+                    param[2*dim:3*dim] = -10.0  # gate_self
+                    param[5*dim:6*dim] = -10.0  # gate_ff
+                    gate_count += 1
+                    print(f"  [GATE-INIT] {name} (scale=0, shift=0, gate=-10)")
+                elif any(pat in name for pat in KEEP_RANDOM_PATTERNS):
                     # Scale down random init to avoid fp16 overflow while
                     # keeping non-zero values for gradient flow.
                     param.data.normal_(0, 0.02)
@@ -186,8 +200,8 @@ def zero_init_new_params(model, pretrained_keys: set):
                     zero_count += 1
                     print(f"  [ZERO-INIT] {name} (shape={list(param.shape)})")
     print(
-        f"[*] Initialized {zero_count + keep_count} new parameters: "
-        f"{zero_count} zero-init, {keep_count} small-random-init.\n"
+        f"[*] Initialized {zero_count + keep_count + gate_count} new parameters: "
+        f"{zero_count} zero-init, {keep_count} small-random-init, {gate_count} gate-init.\n"
     )
 
 
