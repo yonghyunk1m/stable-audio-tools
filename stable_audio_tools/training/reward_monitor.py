@@ -63,10 +63,19 @@ class RewardMonitorCallback(pl.Callback):
 
         if self.music_ranknet_root and self.music_ranknet_root not in sys.path:
             sys.path.append(self.music_ranknet_root)
-        from models.music_ranknet import MusicRankNet
+        from src.model import MusicRankNet
 
-        self.reward_model = MusicRankNet(mode="RankNet", input_dim=2049)
-        self.reward_model.load_state_dict(torch.load(self.reward_model_path, map_location=device))
+        self.reward_model = MusicRankNet()
+        state = torch.load(self.reward_model_path, map_location=device, weights_only=False)
+        # Handle old (net.*) key format → remap to score_predictor.*
+        if any(k.startswith("net.") for k in state.keys()):
+            state = {k.replace("net.", "score_predictor."): v for k, v in state.items()}
+        # Load with strict=False to handle architecture mismatches gracefully
+        missing, unexpected = self.reward_model.load_state_dict(state, strict=False)
+        if missing:
+            print(f"[RewardMonitor] Warning: missing keys: {missing}")
+        if unexpected:
+            print(f"[RewardMonitor] Warning: unexpected keys (ignored): {unexpected}")
         self.reward_model.eval().to(device).requires_grad_(False)
 
         self.mert_processor = Wav2Vec2FeatureExtractor.from_pretrained("m-a-p/MERT-v1-330M", trust_remote_code=True)
@@ -228,8 +237,12 @@ class RewardMonitorCallback(pl.Callback):
                         )
                         clap_text_emb = self.get_clap_text_embedding(clean_p, device)
                         flag_tensor = torch.ones((1, 1), dtype=torch.float32, device=device)
-                        concat_feat = torch.cat([flag_tensor, clap_audio_emb, mert_emb, clap_text_emb], dim=-1)
-                        score = self.reward_model(concat_feat).item()
+                        score = self.reward_model.forward_one_branch(
+                            text=clap_text_emb,
+                            clap_audio=clap_audio_emb,
+                            mert_audio=mert_emb,
+                            flag=flag_tensor,
+                        ).item()
 
                         if target_val != self.null_condition_value:
                             target_scores_log.append(target_val)

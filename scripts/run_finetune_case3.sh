@@ -51,7 +51,7 @@ cd "${REPO_ROOT}"
 # -------- User-tunable defaults (can be overridden via env vars) --------
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-8,9}"
 export MUSIC_RANKNET_ROOT="${MUSIC_RANKNET_ROOT:-/home/yonghyun/music-ranknet}"
-export REWARD_MODEL_CKPT="${REWARD_MODEL_CKPT:-${MUSIC_RANKNET_ROOT}/checkpoints/ultimate_train_all(brainmusic).pt}"
+export REWARD_MODEL_CKPT="${REWARD_MODEL_CKPT:-${MUSIC_RANKNET_ROOT}/checkpoints/reward_model_notext_new.pt}"
 export CLAP_MODEL_CKPT="${CLAP_MODEL_CKPT:-${MUSIC_RANKNET_ROOT}/checkpoints/music_audioset_epoch_15_esc_90.14.pt}"
 export REWARD_THRESHOLDS_PATH="${REWARD_THRESHOLDS_PATH:-${MUSIC_RANKNET_ROOT}/data/processed/FMA_Scoring/reward_thresholds.json}"
 export SA_WARMUP_STEPS="${SA_WARMUP_STEPS:-1000}"

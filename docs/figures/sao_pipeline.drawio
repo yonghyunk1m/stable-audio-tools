@@ -1,0 +1,267 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="SAO-Small Pipeline" id="sao_pipeline">
+    <mxGraphModel dx="2000" dy="3200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1600" pageHeight="3000" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="&lt;font size=5&gt;&lt;b&gt;SAO-Small: Full Training Pipeline&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;font size=2 color=&quot;gray&quot;&gt;497M params total (Core DiT: 339M, VAE: 156M, T5: 109M)&lt;/font&gt;" style="text;html=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="250" y="10" width="500" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="audio" value="&lt;b&gt;Raw Audio&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;(B, 2, 524288)&lt;br&gt;2ch stereo, 44.1kHz, ~11.9s&lt;br&gt;Loaded from FMA/Jamendo MP3&lt;br&gt;Resampled to 44.1kHz if needed&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="350" y="70" width="240" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="vae_enc" value="&lt;b&gt;VAE Encoder (Oobleck)&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;5 Conv layers, strides=[2,4,4,8,8]&lt;br&gt;Total downsampling: ×2048&lt;br&gt;in_channels=2, latent_dim=128&lt;br&gt;78M params, FROZEN&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="350" y="175" width="240" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="audio" target="vae_enc" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="s1" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;(B, 2, 524288)&lt;/font&gt;" style="text;html=1;" vertex="1" parent="1">
+          <mxGeometry x="595" y="150" width="90" height="15" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="vae_samp" value="&lt;b&gt;VAE Sampling (Reparameterization)&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;Encoder outputs (μ, log_var) each (B,64,256)&lt;br&gt;z = μ + exp(0.5 * log_var) * ε_vae&lt;br&gt;ε_vae ~ N(0,I)&lt;br&gt;Bottleneck: 128→64 channels&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="340" y="290" width="260" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="e2" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="vae_enc" target="vae_samp" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="s2" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;μ: (B,64,256)&lt;br&gt;log_var: (B,64,256)&lt;/font&gt;" style="text;html=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="605" y="270" width="110" height="25" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="z0" value="&lt;b&gt;Clean Latent z₀&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;(B, 64, 256)&lt;br&gt;64 latent channels&lt;br&gt;256 time steps at 21.5Hz&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="365" y="405" width="210" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="e3" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="vae_samp" target="z0" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="s3" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;(B, 64, 256)&lt;/font&gt;" style="text;html=1;" vertex="1" parent="1">
+          <mxGeometry x="580" y="380" width="80" height="15" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="noise" value="&lt;b&gt;Forward Noising (Rectified Flow)&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;x_t = (1−t) * z₀ + t * ε_diff&lt;br&gt;ε_diff ~ N(0,I), t ~ U(0,1)&lt;br&gt;Linear interpolation: data↔noise&lt;br&gt;v_target = ε_diff − z₀ (velocity)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="340" y="500" width="260" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="e4" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="z0" target="noise" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="preconv" value="&lt;b&gt;preprocess_conv&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;Conv1d(64, 64, kernel=1)&lt;br&gt;Zero-initialized (residual)&lt;br&gt;output = conv(x) + x&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="355" y="615" width="230" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="e5" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="noise" target="preconv" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="s5" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;(B, 64, 256)&lt;/font&gt;" style="text;html=1;" vertex="1" parent="1">
+          <mxGeometry x="590" y="590" width="80" height="15" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="projin" value="&lt;b&gt;rearrange(&quot;b c t → b t c&quot;) + project_in&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;Rearrange: (B,64,256) → (B,256,64)&lt;br&gt;project_in: Conv1d(64, 1024, kernel=1)&lt;br&gt;Maps latent channels to transformer dim&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="330" y="715" width="280" height="65" as="geometry"/>
+        </mxCell>
+        <mxCell id="e6" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="preconv" target="projin" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="s6" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;(B, 64, 256)&lt;/font&gt;" style="text;html=1;" vertex="1" parent="1">
+          <mxGeometry x="590" y="685" width="80" height="15" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="prepend" value="&lt;b&gt;Prepend (Global Conditioning)&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;Concatenate [global_cond, sequence] along dim=1&lt;br&gt;(B,1,1024) + (B,256,1024) → (B,257,1024)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="330" y="825" width="280" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="e7" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="projin" target="prepend" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="s7" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;(B, 256, 1024)&lt;/font&gt;" style="text;html=1;" vertex="1" parent="1">
+          <mxGeometry x="615" y="795" width="90" height="15" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="gcond" value="&lt;b&gt;global_cond (seconds_total)&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;NumberConditioner: Linear(1, 768)&lt;br&gt;to_global_embed: Linear(768,1024)+SiLU+Linear(1024,1024)&lt;br&gt;+ timestep_embed (Fourier → MLP → 1024d)&lt;br&gt;Output: (B, 1024) → unsqueeze → (B, 1, 1024)&lt;br&gt;FROZEN (pretrained)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="30" y="795" width="270" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_gc" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="gcond" target="prepend" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ditbox" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ebeef5;strokeColor=#7c9cbf;strokeWidth=3;opacity=50;" vertex="1" parent="1">
+          <mxGeometry x="150" y="920" width="700" height="500" as="geometry"/>
+        </mxCell>
+        <mxCell id="ditlabel" value="&lt;font color=&quot;#5577aa&quot; size=4&gt;&lt;b&gt;× 16 Transformer Blocks&lt;/b&gt;&lt;/font&gt;" style="text;html=1;align=right;" vertex="1" parent="1">
+          <mxGeometry x="620" y="925" width="210" height="25" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sa" value="&lt;b&gt;Self-Attention&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;pre_norm: LayerNorm(1024)&lt;br&gt;Q = W_q(x): (B,257,1024) → (B,8,257,128)&lt;br&gt;K = W_k(x): same shape&lt;br&gt;V = W_v(x): same shape&lt;br&gt;Apply RoPE to Q, K&lt;br&gt;Attn = softmax(QKᵀ/√128) · V&lt;br&gt;Concat 8 heads → (B,257,1024)&lt;br&gt;8 heads, head_dim=128, QK-LayerNorm&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="330" y="960" width="300" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="e8" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="prepend" target="sa" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="s8" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;(B, 257, 1024)&lt;/font&gt;" style="text;html=1;" vertex="1" parent="1">
+          <mxGeometry x="635" y="905" width="100" height="15" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="xa" value="&lt;b&gt;Cross-Attention&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;cross_attend_norm: LayerNorm(1024)&lt;br&gt;Q = W_q(audio): (B,257,1024) → (B,8,257,128)&lt;br&gt;K = W_k(cond): (B,66,1024) → (B,8,66,128)&lt;br&gt;V = W_v(cond): (B,66,1024) → (B,8,66,128)&lt;br&gt;Attn = softmax(Q_audio · K_condᵀ/√128) · V_cond&lt;br&gt;Each audio position attends to 66 cond tokens&lt;br&gt;Output: (B,257,1024)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="330" y="1130" width="310" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="e9" value="&lt;font size=1&gt;x = x + self_attn(x)&lt;br&gt;(residual connection)&lt;/font&gt;" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="sa" target="xa" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ffn" value="&lt;b&gt;Feed-Forward Network&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;ff_norm: LayerNorm(1024)&lt;br&gt;Linear(1024, 4096) → GELU → Linear(4096, 1024)&lt;br&gt;Expansion ratio: 4×&lt;br&gt;Output: (B, 257, 1024)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="330" y="1295" width="300" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="e10" value="&lt;font size=1&gt;x = x + cross_attn(x, cond)&lt;br&gt;(residual connection)&lt;/font&gt;" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="xa" target="ffn" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="adaln1" value="&lt;b&gt;adaLN (Self-Attn)&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;to_scale_shift_gate: (6144,)&lt;br&gt;+ global_cond_embedder output&lt;br&gt;→ chunk into 6 × (1024,)&lt;br&gt;&lt;br&gt;x = LN(x) * (1+scale) + shift&lt;br&gt;x = self_attn(x)&lt;br&gt;x = x * σ(1−gate)&lt;br&gt;&lt;br&gt;gate init: −10 → σ(11)≈1.0&lt;br&gt;&lt;font color=&quot;#cc0000&quot;&gt;TRAINABLE&lt;/font&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="160" y="950" width="150" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_aln1" style="endArrow=block;endFill=1;dashed=1;strokeColor=#cc4444;strokeWidth=2;exitX=1;exitY=0.3;entryX=0;entryY=0.3;" edge="1" source="adaln1" target="sa" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="adaln2" value="&lt;b&gt;adaLN (FFN)&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;Same mechanism as above&lt;br&gt;x = LN(x) * (1+scale_ff) + shift_ff&lt;br&gt;x = FFN(x)&lt;br&gt;x = x * σ(1−gate_ff)&lt;br&gt;&lt;font color=&quot;#cc0000&quot;&gt;TRAINABLE&lt;/font&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="160" y="1300" width="150" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_aln2" style="endArrow=block;endFill=1;dashed=1;strokeColor=#cc4444;strokeWidth=2;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="adaln2" target="ffn" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="fourier" value="&lt;b&gt;FourierScoreConditioner&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;Input: reward_score (scalar, e.g. 0.42)&lt;br&gt;Fourier features: sin/cos at multiple freqs → (256d)&lt;br&gt;MLP: Linear(256,768)+SiLU+Linear(768,768)&lt;br&gt;Null handling: score=−999 → zero embedding&lt;br&gt;Output: (B, 768)&lt;br&gt;&lt;font color=&quot;#cc0000&quot;&gt;TRAINABLE (~788K params)&lt;/font&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="-30" y="570" width="250" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="embedder" value="&lt;b&gt;global_cond_embedder&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;to_global_embed: Linear(768,1024)+SiLU+Linear(1024,1024)&lt;br&gt;+ timestep_embed → (B, 1024)&lt;br&gt;&lt;br&gt;global_cond_embedder:&lt;br&gt;Linear(1024,1024)+SiLU+Linear(1024,6144)&lt;br&gt;Output: (B, 6144) → chunk 6 → scale/shift/gate × 2&lt;br&gt;&lt;br&gt;Init: intermediate=N(0,0.02), output=zeros&lt;br&gt;&lt;font color=&quot;#cc0000&quot;&gt;TRAINABLE&lt;/font&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="-40" y="700" width="260" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_fs" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="fourier" target="embedder" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_fs" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;(B, 768)&lt;/font&gt;" style="text;html=1;" vertex="1" parent="1">
+          <mxGeometry x="215" y="672" width="55" height="15" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_emb_aln1" style="endArrow=block;endFill=1;dashed=1;strokeColor=#cc4444;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" source="embedder" target="adaln1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="90" y="870"/>
+              <mxPoint x="235" y="870"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_emb_aln2" style="endArrow=block;endFill=1;dashed=1;strokeColor=#cc4444;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" source="embedder" target="adaln2" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="90" y="870"/>
+              <mxPoint x="130" y="870"/>
+              <mxPoint x="130" y="1290"/>
+              <mxPoint x="235" y="1290"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="s_emb" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;(B, 6144)&lt;/font&gt;" style="text;html=1;" vertex="1" parent="1">
+          <mxGeometry x="95" y="850" width="60" height="15" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="texttok" value="&lt;b&gt;Text Tokens&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;T5-base encoder (frozen, 109M)&lt;br&gt;Input: text prompt string&lt;br&gt;Output: 64 tokens × 768d&lt;br&gt;Max sequence length: 64&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="880" y="940" width="180" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="timetok" value="&lt;b&gt;Time Token&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;NumberConditioner: Linear(1, 768)&lt;br&gt;Input: seconds_total (e.g. 10.0)&lt;br&gt;Output: 1 token × 768d&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="880" y="1030" width="180" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="tocond" value="&lt;b&gt;to_cond_embed&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;Linear(768, 1024, bias=False)&lt;br&gt;+ SiLU activation&lt;br&gt;+ Linear(1024, 1024, bias=False)&lt;br&gt;Projects all cond tokens: 768d → 1024d&lt;br&gt;Shared by text + time + score tokens&lt;br&gt;&lt;font color=&quot;#0000cc&quot;&gt;FROZEN (pretrained)&lt;/font&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="870" y="1115" width="200" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="scoretok" value="&lt;b&gt;Score Token&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;FourierScoreConditioner&lt;br&gt;Input: reward_score (scalar)&lt;br&gt;Output: 1 token × 768d&lt;br&gt;30% CFG dropout → score=−999 → zeros&lt;br&gt;&lt;font color=&quot;#cc0000&quot;&gt;TRAINABLE&lt;/font&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="880" y="1240" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_txt" style="endArrow=block;endFill=1;strokeWidth=1;" edge="1" source="texttok" target="tocond" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_time" style="endArrow=block;endFill=1;strokeWidth=1;" edge="1" source="timetok" target="tocond" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_sc" style="endArrow=block;endFill=1;strokeWidth=1;" edge="1" source="scoretok" target="tocond" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_tocond_xa" style="endArrow=block;endFill=1;strokeWidth=2;entryX=1;entryY=0.5;" edge="1" source="tocond" target="xa" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_cond" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;(B, 66, 768) → &lt;br&gt;to_cond_embed →&lt;br&gt;(B, 66, 1024)&lt;/font&gt;" style="text;html=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="690" y="1155" width="100" height="35" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="concat_label" value="&lt;font size=1&gt;cat along seq dim:&lt;br&gt;text(64) + time(1) + score(1) = 66 tokens&lt;/font&gt;" style="text;html=1;align=center;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="870" y="1095" width="200" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="projout" value="&lt;b&gt;project_out + rearrange(&quot;b t c → b c t&quot;)&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;Remove prepend tokens: [:, prepend_length:, :]&lt;br&gt;(B,257,1024) → (B,256,1024) → project_out → (B,256,64) → (B,64,256)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="310" y="1460" width="330" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="e11" value="&lt;font size=1&gt;x = x + FFN(x) (residual)&lt;/font&gt;" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="ffn" target="projout" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="postconv" value="&lt;b&gt;postprocess_conv&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;Conv1d(64, 64, kernel=1), zero-initialized&lt;br&gt;output = conv(x) + x (residual)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="340" y="1555" width="260" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="e12" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="projout" target="postconv" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="s12" value="&lt;font color=&quot;#3366cc&quot; size=1&gt;(B, 64, 256)&lt;/font&gt;" style="text;html=1;" vertex="1" parent="1">
+          <mxGeometry x="605" y="1525" width="80" height="15" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="vpred" value="&lt;b&gt;v̂ prediction&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;(B, 64, 256) — predicted velocity&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="375" y="1640" width="190" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="e13" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="postconv" target="vpred" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="loss" value="&lt;b&gt;MSE Loss&lt;/b&gt;&lt;br&gt;&lt;font size=1&gt;L = ||v̂ − v_target||²&lt;br&gt;v_target = ε_diff − z₀&lt;br&gt;Backprop updates only TRAINABLE (yellow) params&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="340" y="1720" width="260" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="e14" style="endArrow=block;endFill=1;strokeWidth=2;" edge="1" source="vpred" target="loss" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="bp" value="" style="endArrow=block;endFill=1;strokeColor=#4466aa;strokeWidth=3;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="340" y="1750" as="sourcePoint"/>
+            <mxPoint x="200" y="1750" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="bp_label" value="&lt;font color=&quot;#4466aa&quot; size=1&gt;backprop to&lt;br&gt;trainable (yellow) params&lt;/font&gt;" style="text;html=1;align=right;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1735" width="115" height="25" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="leg_title" value="&lt;b&gt;Legend&lt;/b&gt;" style="text;html=1;align=center;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="350" y="1820" width="60" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg1" value="Frozen (pretrained)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="220" y="1845" width="120" height="28" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg2" value="Trainable (new)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="360" y="1845" width="120" height="28" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg3" value="Loss / Output" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="500" y="1845" width="100" height="28" as="geometry"/>
+        </mxCell>
+        <mxCell id="leg4" value="&lt;font size=1&gt;─── data flow &amp;nbsp;&amp;nbsp;&amp;nbsp; &lt;font color=&quot;#cc4444&quot;&gt;- - - adaLN modulation&lt;/font&gt; &amp;nbsp;&amp;nbsp;&amp;nbsp; &lt;font color=&quot;#4466aa&quot;&gt;◄── backprop&lt;/font&gt;&lt;/font&gt;" style="text;html=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="250" y="1880" width="350" height="15" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

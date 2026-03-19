@@ -270,7 +270,7 @@ def create_logger_and_checkpoint_dir(args, training_wrapper):
 def create_reward_callback(val_dl, train_dl, use_score_conditioning):
     reward_ckpt_path = os.getenv(
         "REWARD_MODEL_CKPT",
-        ranknet_path("checkpoints", "ultimate_train_all(brainmusic).pt"),
+        ranknet_path("checkpoints", "reward_model_notext_new.pt"),
     )
     clap_ckpt_path = os.getenv(
         "CLAP_MODEL_CKPT",
