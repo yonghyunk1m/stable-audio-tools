@@ -1,324 +1,84 @@
-# SAO-Small Score Conditioning Fine-tuning
+# SAO-Small Score Conditioning: Experiment Log
 
-> 작성일: 2026-03-13 (최종 업데이트: 2026-03-14)
-> 프로젝트: Stable Audio Open Small + Music-RankNet Score Conditioning
-> 목적: 리워드 모델 점수를 조건으로 사용하여 음악 생성 품질을 제어하는 파인튜닝 실험
-
----
-
-## 1. 프로젝트 개요
-
-Stable Audio Open Small (SAO-Small, 497M params) 모델에 Music-RankNet 리워드 점수를 conditioning 신호로 주입하여, 생성 음악의 품질을 제어 가능하게 만드는 연구.
-
-### 핵심 아이디어
-- 리워드 모델(Music-RankNet)이 FMA-Large 전체 데이터에 품질 점수를 부여
-- 이 점수를 DiT(Diffusion Transformer)에 조건으로 주입
-- 추론 시 높은 점수를 조건으로 주면 → 고품질 음악 생성 유도
+> Last updated: 2026-03-19
+> Project: SAO-Small + Music-RankNet Score Conditioning
 
 ---
 
-## 2. 실험 설계 (ISMIR Track — FMA-Large)
+## 1. Overview
 
-| Case | 설명 | Model Config | Dataset | Unfreeze Profile | 목적 |
-|------|------|-------------|---------|-----------------|------|
-| **1** | SAO 원본 (학습 없음) | `model_config.json` | - | - | Baseline 성능 측정 |
-| **2** | 전체 FMA SFT | `model_config.json` | `dataset_fma_all.json` | `global` | 파인튜닝 자체의 효과 측정 |
-| **3a** | Score: Adapter only | `model_config_with_score.json` | `dataset_fma_scored.json` | `adapter` | 최소한의 파라미터로 점수 주입 |
-| **3b** | Score: adaLN only | `model_config_with_score_adaln.json` | `dataset_fma_scored.json` | `adaln` | 모든 트랜스포머 블록에서 점수 모듈레이션 |
-| **3c** | Score: Hybrid | `model_config_with_score_adaln.json` | `dataset_fma_scored.json` | `hybrid` | adaLN + Adapter 동시 사용 |
-| **4** | 필터링된 FMA | `model_config.json` | `dataset_fma_filtered.json` | `global` | 리워드 기반 데이터 필터링 효과 |
+Add reward score conditioning to SAO-Small (497M) so generation quality can be steered at inference time.
 
-### 실행 명령어
-```bash
-# Case 3b (adaln) — ★ MODEL_CONFIG 반드시 지정 필요
-CUDA_VISIBLE_DEVICES=8,9 SA_UNFREEZE_PROFILE=adaln \
-  MODEL_CONFIG=./checkpoints/sao_small/model_config_with_score_adaln.json \
-  RUN_NAME=case3b_adaln VAL_EVERY=5000 \
-  ./scripts/run_finetune_case3.sh
+- **ISMIR track**: FMA-Large (106K), score conditioning experiments
+- **ICME track**: MTG-Jamendo (55K), scratch training with vocal separation
 
-# Case 3a (adapter) — prepend config 사용 가능
-SA_UNFREEZE_PROFILE=adapter RUN_NAME=case3a_adapter ./scripts/run_finetune_case3.sh
+## 2. Architecture (497M total)
 
-# 사용 가능: case2, case3a, case3b, case3c, case4
-```
+| Component | Params | ICME classification |
+|-----------|--------|-------------------|
+| DiT (16-depth, 1024-embed) | 339M | Core (500M limit) |
+| VAE (Oobleck enc+dec) | 156M | Auxiliary |
+| T5-base text encoder | 109M | Auxiliary |
+| Score conditioners | ~1-2M | Core addon |
 
-> **주의**: adaln/hybrid profile은 반드시 `model_config_with_score_adaln.json`을 사용해야 함.
-> 기본 config(`model_config_with_score.json`)는 `global_cond_type: "prepend"`이므로 adaLN 파라미터가 모델에 존재하지 않아 adaln profile이 no-op이 됨 (03-14 발견).
+Core total ~340M → 160M headroom under ICME 500M limit.
 
-### ICME Challenge Track (MTG-Jamendo)
-- SAO-Small을 MTG-Jamendo로 학습
-- **500M 파라미터 제한** → adapter(497.2M) 또는 global(499.0M) profile만 사용 가능
-- 전체 데이터 vs 리워드 필터링 vs 점수 조건부 비교
-- MTG-Jamendo 오디오 다운로드 완료 (55,701 tracks, 508GB)
-- Feature 추출 진행 중 (2026-03-14)
+## 3. Score Conditioning Experiments (ISMIR)
 
----
+### Approaches tried
 
-## 3. 아키텍처 상세
+| Approach | Params | Best Corr | Audio Quality | Verdict |
+|----------|--------|-----------|---------------|---------|
+| adaLN (v5-v10) | 7-9M | ~0 | OK | **Failed** — score signal too weak for indirect pathway |
+| Cross-attn, full unfreeze | 1.8M | 0.357 | Some genres degrade | Corr OK but Classical/Blues → silent |
+| LoRA r=8 on to_cond_embed | 802K | 0.425 | Noise across all | Higher corr but global noise degradation |
+| Separate score projection | ~2M | TBD | TBD | Cleanest architecture, not yet validated |
 
-### 3.1 모델 구조
-```
-Audio → Oobleck VAE (↓2048x) → 64ch Latent → DiT (16 blocks, 1024 dim) → Latent → VAE Decoder → Audio
-                                                  ↑
-                                         Conditioning 주입 지점들
-```
+### Key findings
 
-- **전체 파라미터**: 497M (score 없음) / 504M (adaLN 포함)
-- **Diffusion Objective**: Rectified Flow (`rf_denoiser`) — alpha=1-t, sigma=t
-- **VAE**: Oobleck, downsampling ratio 2048, latent dim 64
+1. **adaLN doesn't work** for weak score signals (6 attempts, v5-v10)
+2. **Cross-attention works** but shared `to_cond_embed` causes text degradation
+3. **LoRA causes global noise** — rank=8 too constrained to preserve text quality
+4. **CFG fix critical**: uncond pass must use zeros for score (not duplicate)
+5. **Fourier score embedding** >> Linear(1,768) for discriminative power
 
-### 3.2 Conditioning 경로 (4가지)
+### Reward model analysis
 
-| 경로 | 입력 형태 | 동작 | 사용처 |
-|------|----------|------|--------|
-| **cross_attention** | (B, Seq, 768) | 트랜스포머 cross-attention | prompt (T5), seconds_total |
-| **global_cond (prepend)** | (B, 768) | 시퀀스 앞에 토큰 추가 | seconds_total (기본 모드) |
-| **global_cond (adaLN)** | (B, 768) | 매 블록 scale/shift/gate 변조 | seconds_total + score (adaLN 모드) |
-| **input_add** | (B, 768, 1) → Conv1d → (B, 64, 1) | latent에 잔차 더하기 | continuous_score |
+- **Text bias discovered**: text-aware model ranks Noise/Glitch genres as "best quality"
+- `ablation_dropout_100.pt` (audio-only) gives most sensible rankings
+- New model trained (2026-03-18): `reward_model_20260318_0347.pt`, Test Acc 67-96%
 
-### 3.3 adaLN (Adaptive Layer Normalization) 상세
+## 4. ICME Challenge Plan
 
-adaLN 모드에서는 global conditioning이 트랜스포머의 **모든 블록**에서 scale/shift/gate로 작용:
+### Data pipeline
+1. MTG-Jamendo 55K tracks (full length, ~508GB)
+2. Vocal separation via Mel-Band Roformer (**in progress**, GPU 0-3)
+3. Qwen2-Audio captions: 54,753 generated (tag→caption style, matching test format)
+4. ICME reference captions: 55,701 (Qwen + MusicFlamingo, already provided)
 
-```python
-# TransformerBlock.forward() — adaLN 경로
-scale_self, shift_self, gate_self, scale_ff, shift_ff, gate_ff =
-    (to_scale_shift_gate + global_cond).unsqueeze(1).chunk(6, dim=-1)
+### Training plan
+| Exp | Data | Score | Purpose |
+|-----|------|-------|---------|
+| (i) | Jamendo | w/ score | ICME submission |
+| (ii) | FMA | none | Baseline |
+| (iii) | FMA | w/ score | Score conditioning effect |
 
-# Self-Attention에 적용
-x = LayerNorm(x) * (1 + scale_self) + shift_self
-x = SelfAttention(x) * sigmoid(1 - gate_self)
+### Evaluation metrics (ICME)
+- **FAD**: Audio quality (distributional)
+- **CLAP Score**: Text-audio alignment
+- **CCS (K/M)**: Concept coverage per prompt
 
-# FeedForward에 적용
-x = LayerNorm(x) * (1 + scale_ff) + shift_ff
-x = FeedForward(x) * sigmoid(1 - gate_ff)
-```
+### Test prompt format
+Tags → Qwen2-Audio → caption-like descriptions (<100 words).
 
-**파라미터 이름** (unfreeze profile 매칭에 중요):
-- `to_scale_shift_gate`: 블록별 학습 가능 파라미터 (nn.Parameter, shape: 6*dim)
-- `global_cond_embedder`: 공유 프로젝션 네트워크 (Linear→SiLU→Linear, dim→6*dim)
+## 5. Current Status (2026-03-19)
 
-### 3.4 Score Conditioner
+- **Vocal separation**: Running on GPU 0-3, ~2-3 days ETA
+- **LoRA v2 training**: GPU 8-9, Epoch 8, Best Corr=0.425 (but noise issues)
+- **Qwen captions**: Complete (54,753 Jamendo tracks)
+- **Disk**: 589GB free after cleanup
 
-```python
-# ContinuousScoreConditioner
-score (float) → Linear(1, 768) → unsqueeze(-1) → (B, 768, 1)
-# CFG dropout: score = -999.0 → zero vector
-```
+## 6. Repositories
 
-### 3.5 Dual-Path 설계 (adaLN config)
-
-adaLN 설정에서 `continuous_score`는 **두 경로**로 동시에 들어감:
-1. `global_cond_ids` → adaLN scale/shift/gate (매 블록 변조)
-2. `input_add_ids` → Conv1d adapter (latent 잔차)
-
-`seconds_total`도 `global_cond_ids`에 포함 → 같은 차원(768)이므로 **sum-merge** 처리.
-
----
-
-## 4. Unfreeze Profile별 학습 파라미터
-
-### 4.1 모델 구성 요소별 파라미터
-
-| 구성 요소 | 파라미터 수 | ICME 분류 |
-|-----------|-----------|----------|
-| VAE Encoder (Oobleck) | 78.0M | Auxiliary (500M 계산 제외) |
-| VAE Decoder (Oobleck) | 78.1M | Auxiliary (500M 계산 제외) |
-| T5-base Text Encoder | ~109M | Auxiliary (500M 계산 제외) |
-| **DiT (Diffusion Transformer)** | **339.1M** | **Core** |
-| NumberConditioner (seconds_total) | 0.2M | Core |
-| FourierScoreConditioner (cross-attn) | 0.8M | Core |
-| ScoreInputConcatConditioner (input-concat) | 0.01M | Core |
-| ScoreBinConditioner | — | Core |
-| **Core 합계 (ICME 기준)** | **~340M** | **500M 대비 68%** |
-| **Auxiliary 합계** | **~265M** | 제외 |
-| **Total** | **~496M** | — |
-
-### 4.2 Unfreeze Profile별 학습 파라미터
-
-| Profile | 학습 파라미터 | Core 총합 | 학습 대상 | 필요 config |
-|---------|-------------|----------|----------|------------|
-| **hybrid** | 9.3M | ~347M | adaLN 전체 + adapter + global_embed + conditioner | `adaln` config |
-| **adaln** | 7.4M | ~347M | to_scale_shift_gate (16블록) + global_cond_embedder + conditioner | `adaln` config |
-| **adapter** | 50K | ~340M | input_add_adapter (Conv1d 768→64) + conditioner | prepend OK |
-| **global** | 1.8M | ~341M | to_global_embed (2 linear layers) + conditioner | prepend OK |
-| **minimal** | 1.5K | ~340M | continuous_score.mapper only | prepend OK |
-| **xattn** ★ | 1.8M | ~341M | continuous_score (Fourier+MLP) + to_cond_embed | prepend OK |
-| **xattn_concat** ★ | 2.6M | ~341M | continuous_score + score_concat + to_cond_embed + preprocess_conv | `xattn_concat` config |
-
-> ★ = 실험적으로 검증됨 (Corr=0.256). 나머지 profile은 adaLN 기반으로 실패 확인 (v5-v10).
-> **ICME**: 모든 profile이 Core ≤ 500M. 160M 여유로 추가 conditioner/LoRA 가능.
-> **ISMIR**: 총 파라미터 제한 없음.
-
----
-
-## 5. 학습 설정
-
-### Optimizer & Scheduler
-| 항목 | 기본값 | 환경변수 |
-|------|--------|---------|
-| Optimizer | AdamW | - |
-| Learning Rate | 5e-5 | `SA_LR` |
-| Weight Decay | 1e-3 | `SA_WEIGHT_DECAY` |
-| Warmup Steps | 1,000 | `SA_WARMUP_STEPS` |
-| Total Steps | 300,000 | `SA_TOTAL_STEPS` |
-| Scheduler | Cosine Hard Restart | - |
-| Restart Cycles | 18 | `SA_NUM_CYCLES` |
-| CFG Dropout Rate | 0.15 | `SA_CFG_DROP_RATE` |
-
-### Selective CFG (LatCHs 기반)
-- `SA_SELECTIVE_CFG_THRESHOLD=0.8` (기본값)
-- sigma(=t) < 0.8일 때 CFG 비활성화 → denoising 후반부에서는 무조건 생성
-- 1.0으로 설정하면 항상 CFG 적용
-
-### Validation (RewardMonitorCallback)
-- 생성 샘플 수: 100 (`SA_VAL_NUM_SAMPLES`) — 10 bins × 10 repeats
-- 생성 스텝: 50 (`SA_VAL_GEN_STEPS`)
-- CFG Scale: 3.5 (`SA_VAL_CFG_SCALE`)
-- 리워드 모델로 점수 매기고, correlation/monotonicity 측정
-- Target score: 10-bin 중앙값 사용 (경계값 아님, 03-14 수정)
-- Feature 추출: scoring pipeline(04_extract)과 동일한 방식으로 정합 (03-14 수정)
-
----
-
-## 6. 데이터
-
-### FMA-Large
-| 항목 | 값 |
-|------|-----|
-| 오디오 경로 | `/home/yonghyun/fma/data/fma_large/` |
-| JSON sidecar 수 | 103,103개 |
-| Sidecar 형식 | `{"reward_score": 0.798, "text": "A Hip-Hop song."}` |
-| 전체 메타데이터 | `metadata_fma_all.jsonl` (106,401줄) |
-| 스코어 메타데이터 | `metadata_fma_scored.jsonl` (106,401줄) |
-| 필터링 메타데이터 | `metadata_fma_filtered.jsonl` (10,640줄, 상위 ~10%) |
-
-> 참고: `custom_metadata_path`는 dataset config에 있지만 실제로 데이터 로딩 코드에서 사용하지 않음. 메타데이터는 오디오 옆의 JSON sidecar에서 읽음.
-
-### Music-RankNet (리워드 모델)
-- 아키텍처: Siamese RankNet
-- 입력: FLAG(1) + CLAP(512) + MERT(1024) + TEXT(512) = 2049차원
-- Hidden: [1024, 512, 256, 128], dropout=0.5
-- 체크포인트: `music-ranknet/checkpoints/ultimate_train_all(brainmusic).pt`
-
----
-
-## 7. 코드 수정 이력
-
-### 7.1 버그 수정 (2026-03-13)
-
-| # | 파일 | 수정 내용 | 이유 |
-|---|------|----------|------|
-| 1 | `configs/dataset_fma_*.json` (3개) | `"path": ""` → 실제 FMA 경로 | 빈 경로로 데이터 로드 실패 |
-| 2 | `finetune.py` UNFREEZE_PROFILES | `"adaLN"` → `"to_scale_shift_gate"`, `"global_cond_embedder"` | 이전 키가 실제 파라미터명과 불일치하여 adaLN 파라미터가 동결된 채 학습됨 |
-| 3 | `diffusion.py` get_conditioning_inputs() | 3D→2D shape 정규화 + 같은 dim이면 sum-merge | seconds_total (B,1,768)과 score (B,768,1) concat 시 shape 에러 |
-| 4 | `dit.py` forward() | 1536→768 하드코딩 분리 로직 삭제 | 상위에서 이미 처리하므로 dead code |
-
-### 7.2 버그 수정 (2026-03-14) — RewardMonitorCallback
-
-| # | 파일 | 수정 내용 | 이유 |
-|---|------|----------|------|
-| 5 | `reward_monitor.py` | threshold 키 `bin_{i}_median` → `top_{i}_percent` | 잘못된 키로 모든 target=0.0 → corr/mono 항상 0 |
-| 6 | `reward_monitor.py` | 첫 10개 null sample 제거 | 100개 중 10개 낭비 + top_100% bin 미측정 |
-| 7 | `reward_monitor.py` | wandb audio key에 bin index 추가 | 동일 키 덮어쓰기로 2개만 표시됨 |
-| 8 | `reward_monitor.py` | `sample_rate` → `model_config.get()` | pl_module에 sample_rate 속성 없음 |
-| 9 | `reward_monitor.py` | CLAP 로딩: `load_ckpt()` → 수동 `load_state_dict` | laion_clap 1.1.4 `position_ids` 키 호환성 |
-| 10 | `reward_monitor.py` | CLAP audio: `get_audio_embedding_from_filelist()` via temp file | `get_audio_embedding_from_data()`와 전처리 차이로 cos sim ~0.05 |
-| 11 | `reward_monitor.py` | CLAP text: `get_text_embedding()` + custom tokenizer | 수동 RobertaTokenizer 결과 불일치 + 1.1.4 squeeze 버그 |
-| 12 | `reward_thresholds.json` | 경계값(boundary) → 중앙값(median) | 경계값은 bin 대표값으로 부적합 (특히 Top 100%: -5.80 → -1.52) |
-| 13 | 실행 시 | `MODEL_CONFIG=model_config_with_score_adaln.json` 필수 | 기본 config(prepend)에는 adaLN 파라미터 미존재 → adaln profile이 no-op |
-
-### 7.3 기능 추가 (2026-03-13)
-
-| # | 파일 | 내용 |
-|---|------|------|
-| 14 | `model_config_with_score_adaln.json` | adaLN 활성화 config 생성 (`global_cond_type: "adaLN"`, dual-path) |
-| 15 | `diffusion.py` DiTWrapper | Selective CFG threshold 환경변수화 (`SA_SELECTIVE_CFG_THRESHOLD`) |
-| 16 | `scripts/run_experiments.sh` | 전체 실험 케이스 마스터 런처 생성 |
-| 17 | `scripts/run_finetune_case3.sh` | Python 경로, 새 환경변수, help 텍스트 업데이트 |
-
-### 7.4 버그 수정 및 개선 (2026-03-15) — Score Conditioning 파이프라인
-
-| # | 파일 | 수정 내용 | 이유 |
-|---|------|----------|------|
-| 18 | `conditioners.py` | `ContinuousScoreConditioner`: Linear(1,768) → FourierFeatures + MLP | 스코어 값별 구분력 향상 (timestep embedding과 동일 방식) |
-| 19 | `conditioners.py` | `ScoreInputConcatConditioner` 신규 | 16채널 input-concat 경로 (cross-attn 경쟁 없는 직접 주입) |
-| 20 | `conditioners.py` | MultiConditioner: batched dict 언패킹 | collation_fn이 만든 batched dict → per-sample dict 복원 (DDP batch 불일치 해결) |
-| 21 | `conditioners.py` | score conditioner 기본값 0.0 | metadata에 키 없을 때 "A music song." 대신 0.0 반환 |
-| 22 | `dit.py` | CFG uncond: `global_embed` → `zeros_like` | 비조건부 패스에 null 임베딩 사용 (스코어 CFG 증폭 가능하게) |
-| 23 | `dit.py` | CFG uncond: `input_concat_cond` → `zeros_like` | input-concat 경로도 동일 적용 |
-| 24 | `utils.py` | `copy_state_dict`: shape 불일치 시 zero-padding | input_concat_dim 추가 시 pretrained 가중치 보존 (ControlNet 방식) |
-| 25 | `finetune.py` | `xattn`, `xattn_concat` 언프리즈 프로파일 추가 | cross-attention 기반 스코어 컨디셔닝 |
-| 26 | `finetune.py` | `score_concat` 메타데이터 자동 추가 | `continuous_score`와 동일 값 dual-path 전달 |
-| 27 | `finetune.py` | zero_init: `score_concat` 패턴 추가 | 새 conditioner 파라미터 소규모 랜덤 초기화 |
-
-### 7.5 Pretrained Weight 호환성 (업데이트)
-- `copy_state_dict()`가 shape 일치 시 직접 로드, 불일치 시 zero-padding 적용
-- input_concat_dim=16 추가 시: `preprocess_conv` (64,64,1)→(80,80,1), `project_in` (1024,64)→(1024,80) 자동 패딩
-- 새 파라미터는 `zero_init_new_params()`에서 ControlNet 패턴 적용 (중간=랜덤, 출력=zero)
-
----
-
-## 8. 주요 파일 위치
-
-```
-stable-audio-tools/
-├── finetune.py                          # 파인튜닝 진입점
-├── checkpoints/sao_small/
-│   ├── model.safetensors                # pretrained weights
-│   ├── model_config.json                # 원본 (score 없음)
-│   ├── model_config_with_score.json     # score + prepend mode
-│   └── model_config_with_score_adaln.json  # score + adaLN mode ★
-├── configs/
-│   ├── dataset_fma_all.json             # 전체 FMA
-│   ├── dataset_fma_scored.json          # 스코어 포함 FMA
-│   ├── dataset_fma_filtered.json        # 상위 10% 필터링
-│   ├── metadata_fma_all.jsonl
-│   ├── metadata_fma_scored.jsonl
-│   └── metadata_fma_filtered.jsonl
-├── scripts/
-│   ├── run_experiments.sh               # 마스터 런처 ★
-│   └── run_finetune_case3.sh            # 개별 실행 스크립트
-└── stable_audio_tools/
-    ├── models/
-    │   ├── conditioners.py              # ContinuousScoreConditioner
-    │   ├── diffusion.py                 # DiTWrapper, ConditionedDiffusionModelWrapper
-    │   ├── dit.py                       # DiffusionTransformer (adaLN 포함)
-    │   └── transformer.py              # TransformerBlock (to_scale_shift_gate)
-    └── training/
-        ├── diffusion.py                 # DiffusionCondTrainingWrapper
-        └── reward_monitor.py            # RewardMonitorCallback
-
-music-ranknet/
-├── checkpoints/
-│   ├── ultimate_train_all(brainmusic).pt  # 리워드 모델
-│   └── music_audioset_epoch_15_esc_90.14.pt  # CLAP 체크포인트
-└── data/processed/FMA_Scoring/
-    └── reward_thresholds.json
-```
-
----
-
-## 9. 현재 진행 상태 & 다음 단계 (2026-03-15 업데이트)
-
-### 완료
-- [x] adaLN 경로 검증 → **실패 확인** (v5-v10, 6회 시도, Corr~0)
-- [x] Cross-attention 경로 전환 → **첫 성공** (xattn v2: Corr=0.256, Mono=0.597)
-- [x] Fourier score embedding 구현 (FourierFeatures + MLP, timestep과 동일 방식)
-- [x] Input-concat 16채널 이중 경로 구현 + DDP 호환 수정
-- [x] CFG 수정: uncond 패스에 zeros 사용 (스코어 CFG 증폭 가능)
-- [x] Score dropout 30%로 증가
-
-### 현재 학습 중
-| 실험 | GPU | Config | 학습 파라미터 | 설명 |
-|------|-----|--------|-------------|------|
-| Fourier+xattn v1 | 8,9 | `model_config_with_score_xattn.json` | 2.6M | Fourier embedding + cross-attn |
-| Fourier+xattn+concat v10 | 2,3 | `model_config_with_score_xattn_concat.json` | 2.6M | + 16채널 input-concat |
-
-### TODO
-- [ ] Step 5000 validation에서 Fourier embedding 효과 확인 (Corr > 0.25 기대)
-- [ ] xattn vs xattn+concat 비교
-- [ ] Score-specific CFG scale 실험 (추론 시 스코어 CFG만 별도 증폭)
-- [ ] Case 2 (SFT baseline) 실행하여 비교군 확보
-- [ ] Case 4 (filtered FMA) 실행
-- [ ] ICME Track: Jamendo scoring → threshold → 학습 구축
+- `stable-audio-tools`: SAO-Small training/inference code
+- `music-ranknet`: Reward model, feature extraction, scoring pipelines
